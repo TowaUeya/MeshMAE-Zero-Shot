@@ -144,6 +144,26 @@ python -m src.cluster.run_clustering \
 - `out/plots/*.png`（エルボー法、シルエット、ギャップ統計、GMM BIC、UMAP など）
 - `out/report.html`（テンプレートは `src/cluster/templates/report.html`）
 
+### 5. 階層クラスタリング & デンドログラム
+
+K-Means による平坦クラスタリングに加えて、PCA 後の特徴量を用いた Ward 法の階層クラスタリングとデンドログラム可視化を行えます。凝集過程に Optimal Leaf Ordering (OLO) を適用することで、似た試料が連続して並ぶ読みやすい樹形を得られます。さらに、K-Means のラベルと比較した Adjusted Rand Index (ARI) と Variation of Information (VI) を算出し、クラスタ構造の一致度を定量的に確認します。
+
+```bash
+python -m src.cluster.plot_dendrogram \
+  --emb embeddings/pca_embeddings.npy \
+  --kmeans out/cluster/kmeans_assignments.csv \
+  --meta embeddings/meta.csv \
+  --out-plot out/plots/dendrogram.png
+```
+
+主な出力物:
+
+- `out/plots/dendrogram.png`: Ward×Euclid + OLO によるデンドログラム。葉ラベルは `meta.csv` の `sample_id` 列を使用（未指定時はインデックス）。
+- `out/cluster/hier_labels_k*.csv`: 指定クラスタ数（既定は K-Means のクラスタ数）で平坦化した階層クラスタリングのラベル。
+- `out/cluster/hier_vs_kmeans_metrics.json`: K-Means と階層クラスタリングの一致度メトリクス（`k_star`, `ARI_hier_vs_kmeans`, `VI_hier_vs_kmeans`）。
+
+距離閾値でカットしたい場合は `--distance-threshold`、既存の K* とは異なるクラスタ数で比較したい場合は `--max-clusters` を指定してください。高さカットの目安として、デンドログラムの“U字”の高さ（コーフェネティック距離）を参照すると理解しやすくなります。
+
 ## トラブルシューティングとヒント
 
 - **CUDA エラー**: `torch.cuda.is_available()` が False の場合は CPU 実行に切り替わりますが、学習時間が長くなります。CUDA ドライバと PyTorch のバージョン互換を確認してください。
