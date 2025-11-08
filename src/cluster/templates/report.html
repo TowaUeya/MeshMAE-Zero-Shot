@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>{{ title }}</title>
+  <style>
+    body { font-family: "Inter", "Helvetica", sans-serif; margin: 40px; background: #0f172a; color: #e2e8f0; }
+    h1, h2, h3 { color: #f8fafc; }
+    a { color: #38bdf8; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 24px; }
+    table th, table td { border: 1px solid #1e293b; padding: 8px 12px; text-align: left; }
+    .metric-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); grid-gap: 16px; }
+    .card { background: #1e293b; border-radius: 12px; padding: 16px; box-shadow: 0 20px 25px -15px rgba(15, 23, 42, 0.5); }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #334155; color: #e2e8f0; font-size: 12px; }
+    img { max-width: 100%; border-radius: 12px; margin-bottom: 16px; }
+    footer { margin-top: 48px; font-size: 14px; color: #94a3b8; }
+  </style>
+</head>
+<body>
+  <h1>{{ title }}</h1>
+  <p>Generated on {{ generated_at }} using MeshMAE Zero-Shot clustering pipeline.</p>
+
+  <section>
+    <h2>Consensus Clustering Summary</h2>
+    <div class="metric-grid">
+      {% for metric in consensus_metrics %}
+      <div class="card">
+        <h3>{{ metric.name }}</h3>
+        <p><span class="badge">value</span> {{ metric.value }}</p>
+        <p><span class="badge">description</span> {{ metric.description }}</p>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section>
+    <h2>Charts</h2>
+    <div class="metric-grid">
+      {% for plot in plots %}
+      <div class="card">
+        <h3>{{ plot.title }}</h3>
+        <img src="../plots/{{ plot.filename }}" alt="{{ plot.title }}" />
+        <p>{{ plot.caption }}</p>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section>
+    <h2>Cluster Assignments</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Sample</th>
+          <th>K-Means</th>
+          <th>HDBSCAN</th>
+          <th>Consensus</th>
+          <th>Ambiguous</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in assignments %}
+        <tr>
+          <td>{{ row.sample_id }}</td>
+          <td>{{ row.kmeans }}</td>
+          <td>{{ row.hdbscan }}</td>
+          <td>{{ row.consensus }}</td>
+          <td>{{ row.ambiguous }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <footer>
+    <p>For reproducibility details, refer to README and configs.</p>
+  </footer>
+</body>
+</html>

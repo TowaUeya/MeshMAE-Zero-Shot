@@ -1,0 +1,25 @@
+# Configuration for continuing self-supervised pretraining on fossil meshes
+experiment:
+  name: fossils_target_ssl
+  output_dir: checkpoints
+  seed: 42
+
+meshmae:
+  dataroot: ./datasets/fossils_maps
+  batch_size: 32
+  epochs: 200
+  mask_ratio: 0.6
+  base_learning_rate: 1.5e-4
+  weight_decay: 0.05
+  warmup_epochs: 20
+  resume_checkpoint: ./checkpoints/shapenet_pretrain.pkl
+  save_checkpoint: ./checkpoints/fossils_target.pkl
+  gradient_accumulation: 1
+  precision: fp16
+
+logging:
+  interval: 50
+  ckpt_interval: 10
+  wandb:
+    enable: false
+    project: meshmae-fossils
