@@ -93,7 +93,39 @@ python -m src.preprocess.make_manifold_and_maps \
   --metadata datasets/fossils_maps/processing_metadata.json
 ```
 
-処理後は `datasets/fossils_maps/` 以下に元ディレクトリ構造を保ったまま保存され、面数やスケール、MAPS 有無を記録した JSON マニフェストが出力されます。
+ 処理後は `datasets/fossils_maps/` 以下に元ディレクトリ構造を保ったまま保存され、面数やスケール、MAPS 有無を記録した JSON マニフェストが出力されます。
+
+#### SubdivNet を用いた MAPS 生成手順
+
+MeshMAE の README で案内されている通り、MAPS 生成には外部リポジトリ [SubdivNet](https://github.com/lzhengning/SubdivNet) をそのまま利用する想定です。本リポジトリには MAPS 生成スクリプトを同梱していないため、以下の手順で SubdivNet を取得し `datagen_maps.py` を実行してください。
+
+1. **SubdivNet を取得**
+
+   ```bash
+   git clone https://github.com/lzhengning/SubdivNet
+   cd SubdivNet
+   pip install -r requirements.txt  # triangle, pymeshlab, shapely, networkx, rtree など
+   ```
+
+   依存関係や利用方法の詳細は SubdivNet の README を参照してください（`datagen_maps.py` の設定を編集して自前データを MAPS にリメッシュする運用が案内されています）。
+
+2. **`datagen_maps.py` の設定を編集**
+
+   ファイル内の設定ディクショナリで `src_root`（入力フォルダ）、`dst_root`（出力フォルダ）などを自前のパスに書き換えます。コマンドライン引数ではなく「設定を書き換えてから実行する」スタイルです。
+
+3. **MAPS 生成を実行**
+
+   ```bash
+   python datagen_maps.py
+   ```
+
+   MAPS 化は失敗することもあるため、スクリプト冒頭コメントに記載されているようにベースサイズを大きくする／入力面数を事前に減らす／試行回数を増やす等の対策を試みてください。
+
+4. **MeshMAE 側への配置**
+
+   生成された MAPS 出力フォルダを本リポジトリ直下に作成した `datasets/` 配下へ配置し、MeshMAE 実行時には `--dataroot` でそのフォルダを指します（例: `--dataroot ./datasets/Manifold40-MAPS-96-3/`）。
+
+SubdivNet の `datagen_maps.py` は `--maps_script /path/to/datagen_maps.py` でパスを渡して呼び出すか、必要に応じて SubdivNet のモジュールを `PYTHONPATH` に追加して `from maps import MAPS` として直接利用することも可能です。特にこだわりがなければ「外部スクリプトをそのまま実行する」方式が最も簡単です。
 
 ### 2. 自己教師あり学習の継続（ドメイン適応）
 公式の MeshMAE 事前学習済みチェックポイント（例: `shapenet_pretrain.pkl`）を `checkpoints/` に配置します。ラッパースクリプトが `configs/pretrain_target.yaml` を読み込み、公式スクリプト `scripts/pretrain/train_pretrain.sh` にパラメータを橋渡しします。
