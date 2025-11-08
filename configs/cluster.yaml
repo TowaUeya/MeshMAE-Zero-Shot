@@ -1,0 +1,39 @@
+# Clustering configuration
+preprocessing:
+  scale: true
+  pca_components: 0.99  # float for variance retention
+  whiten: true
+  umap:
+    enable: true
+    n_neighbors: 25
+    min_dist: 0.1
+    metric: cosine
+    random_state: 42
+    n_components: 2
+
+consensus:
+  k_min: 2
+  k_max: 15
+  elbow_curve_points: 20
+  silhouette_sample_size: null
+  gap_reference: 5
+  gmm_covariance_type: full
+  majority_threshold: 0.5
+
+clustering:
+  kmeans_init: k-means++
+  kmeans_n_init: 10
+  hdbscan:
+    min_cluster_size: 8
+    min_samples: null
+    cluster_selection_method: eom
+    allow_single_cluster: false
+
+unknown_detection:
+  silhouette_threshold: 0.05
+  posterior_threshold: 0.5
+  distance_quantile: 0.95
+
+report:
+  html_template: ./src/cluster/templates/report.html
+  title: Zero-Shot Mesh Clustering

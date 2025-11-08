@@ -1,0 +1,19 @@
+# Embedding extraction options
+input:
+  dataroot: ./datasets/fossils_maps
+  checkpoint: ./checkpoints/fossils_target.pkl
+  mesh_extension: ["ply", "stl"]
+
+encoder:
+  pool_strategy: mean  # options: cls, mean
+  batch_size: 16
+  device: cuda
+  num_workers: 8
+  normalize_embeddings: true
+  save_layer_tokens: false
+
+output:
+  embedding_path: ./embeddings/raw_embeddings.npy
+  metadata_path: ./embeddings/meta.csv
+  pca_embedding_path: ./embeddings/pca_embeddings.npy
+  umap_embedding_path: ./embeddings/umap_embeddings.npy

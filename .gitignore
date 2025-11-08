@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual environments
+.env/
+.venv/
+venv/
+
+# IDEs
+.vscode/
+.idea/
+
+# Data & outputs
+out/
+embeddings/
+datasets/fossils_raw/
+datasets/fossils_maps/
+checkpoints/
+!checkpoints/.gitkeep
+!datasets/.gitkeep
+!datasets/fossils_raw/.gitkeep
+!datasets/fossils_maps/.gitkeep
+!out/.gitkeep
+!out/plots/.gitkeep
+!out/cluster/.gitkeep
+!out/report/.gitkeep
+logs/
+
+# Misc
+.DS_Store
