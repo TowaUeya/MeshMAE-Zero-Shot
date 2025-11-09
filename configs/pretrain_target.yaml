@@ -1,25 +1,15 @@
-# Configuration for continuing self-supervised pretraining on fossil meshes
-experiment:
-  name: fossils_target_ssl
-  output_dir: checkpoints
-  seed: 42
+# 化石メッシュで継続自己教師あり学習を行うための設定
+# dataroot は MeshMAE 公式の --dataroot 引数に対応するディレクトリを指す
+# init_checkpoint を空にするとランダム初期化になるが、同名ファイルが存在する場合はラッパーが警告して停止する
+# dry_run を true にすると MeshMAE スクリプトを実行せず設定確認とログ生成のみ行う
 
-meshmae:
-  dataroot: ./datasets/fossils_maps
-  batch_size: 32
-  epochs: 200
-  mask_ratio: 0.6
-  base_learning_rate: 1.5e-4
-  weight_decay: 0.05
-  warmup_epochs: 20
-  resume_checkpoint: ./checkpoints/shapenet_pretrain.pkl
-  save_checkpoint: ./checkpoints/fossils_target.pkl
-  gradient_accumulation: 1
-  precision: fp16
+dataroot: "./datasets/fossils_maps"
+batch_size: 8
+epochs: 20
+mask_ratio: 0.75
 
-logging:
-  interval: 50
-  ckpt_interval: 10
-  wandb:
-    enable: false
-    project: meshmae-fossils
+init_checkpoint: "./checkpoints/shapenet_pretrain.pkl"
+resume_checkpoint: ""
+save_checkpoint: "./checkpoints/fossils_target.pkl"
+
+dry_run: false
