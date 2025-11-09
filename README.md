@@ -128,6 +128,14 @@ MeshMAE の README で案内されている通り、MAPS 生成には外部リ�
 SubdivNet の `datagen_maps.py` は `--maps_script /path/to/datagen_maps.py` でパスを渡して呼び出すか、必要に応じて SubdivNet のモジュールを `PYTHONPATH` に追加して `from maps import MAPS` として直接利用することも可能です。特にこだわりがなければ「外部スクリプトをそのまま実行する」方式が最も簡単です。
 
 ### 2. 自己教師あり学習の継続（ドメイン適応）
+#### 継続SSLの実行方法
+1. `checkpoints/shapenet_pretrain.pkl` に公式 MeshMAE の事前学習済みチェックポイントを配置します。
+2. `configs/pretrain_target.yaml` を編集し、`dataroot`（前処理済み化石メッシュ）、`init_checkpoint`（初期重み）、`save_checkpoint`（出力先）などを必要に応じて書き換えます。
+3. `bash src/pretrain/run_target_pretrain.sh --config configs/pretrain_target.yaml` を実行します。`dry_run: true` に設定するとコマンド内容とパスの検証のみ行います。
+4. 学習完了後は `checkpoints/fossils_target.pkl`（`save_checkpoint` で指定したパス）に継続学習済みモデルが保存され、`out/pretrain_log.json` に実行コマンドと missing/unexpected keys の記録が残ります。
+
+> **注意:** `init_checkpoint` を空にしたまま `checkpoints/shapenet_pretrain.pkl` が存在すると安全のためスクリプトが停止します。初期化ファイルを使わない場合は名称を変更するか、別パスに移動してください。
+
 公式の MeshMAE 事前学習済みチェックポイント（例: `shapenet_pretrain.pkl`）を `checkpoints/` に配置します。ラッパースクリプトが `configs/pretrain_target.yaml` を読み込み、公式スクリプト `scripts/pretrain/train_pretrain.sh` にパラメータを橋渡しします。
 
 ```bash
