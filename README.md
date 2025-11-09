@@ -138,9 +138,9 @@ SubdivNet の `datagen_maps.py` は `--maps_script /path/to/datagen_maps.py` で
 
 ~~公式の MeshMAE 事前学習済みチェックポイント（例: `shapenet_pretrain.pkl`）を `checkpoints/` に配置します。ラッパースクリプトが `configs/pretrain_target.yaml` を読み込み、公式スクリプト `scripts/pretrain/train_pretrain.sh` にパラメータを橋渡しします。~~
 
-~~```bash~~
-~~# MeshMAE リポジトリが別ディレクトリにある場合は環境変数で指定~~
-~~bash src/pretrain/run_target_pretrain.sh --config configs/pretrain_target.yaml~~
+~~```bash
+~~# MeshMAE リポジトリが別ディレクトリにある場合は環境変数で指定
+~~bash src/pretrain/run_target_pretrain.sh --config configs/pretrain_target.yaml
 ~~```~~
 
 ~~YAML には `--dataroot`, `--batch_size`, `--epochs` などの設定が含まれます。動作確認のみの場合は `--dry-run` を付与してください。~~
