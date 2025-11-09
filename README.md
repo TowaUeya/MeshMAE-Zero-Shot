@@ -136,16 +136,16 @@ SubdivNet の `datagen_maps.py` は `--maps_script /path/to/datagen_maps.py` で
 
 > **注意:** `init_checkpoint` を空にしたまま `checkpoints/shapenet_pretrain.pkl` が存在すると安全のためスクリプトが停止します。初期化ファイルを使わない場合は名称を変更するか、別パスに移動してください。
 
-公式の MeshMAE 事前学習済みチェックポイント（例: `shapenet_pretrain.pkl`）を `checkpoints/` に配置します。ラッパースクリプトが `configs/pretrain_target.yaml` を読み込み、公式スクリプト `scripts/pretrain/train_pretrain.sh` にパラメータを橋渡しします。
+~~公式の MeshMAE 事前学習済みチェックポイント（例: `shapenet_pretrain.pkl`）を `checkpoints/` に配置します。ラッパースクリプトが `configs/pretrain_target.yaml` を読み込み、公式スクリプト `scripts/pretrain/train_pretrain.sh` にパラメータを橋渡しします。~~
 
-```bash
-# MeshMAE リポジトリが別ディレクトリにある場合は環境変数で指定
-bash src/pretrain/run_target_pretrain.sh --config configs/pretrain_target.yaml
-```
+~~```bash~~
+~~# MeshMAE リポジトリが別ディレクトリにある場合は環境変数で指定~~
+~~bash src/pretrain/run_target_pretrain.sh --config configs/pretrain_target.yaml~~
+~~```~~
 
-YAML には `--dataroot`, `--batch_size`, `--epochs` などの設定が含まれます。動作確認のみの場合は `--dry-run` を付与してください。
+~~YAML には `--dataroot`, `--batch_size`, `--epochs` などの設定が含まれます。動作確認のみの場合は `--dry-run` を付与してください。~~
 
-> **発展的な利用:** MeshMAE 本体に継続学習向けのパッチを適用している場合は、`configs/pretrain_target.yaml` 内の `resume_checkpoint` や `save_checkpoint` を `checkpoints/shapenet_pretrain.pkl` および出力ファイルへ設定することで、初期重みからの再開と保存を制御できます。パッチを適用していない場合は、標準的な自己教師あり学習として動作します。
+~~> **発展的な利用:** MeshMAE 本体に継続学習向けのパッチを適用している場合は、`configs/pretrain_target.yaml` 内の `resume_checkpoint` や `save_checkpoint` を `checkpoints/shapenet_pretrain.pkl` および出力ファイルへ設定することで、初期重みからの再開と保存を制御できます。パッチを適用していない場合は、標準的な自己教師あり学習として動作します。~~
 
 ### 3. 特徴量抽出
 化石向け自己教師あり学習を行った後、またはベースモデルのみで構わない場合でも、前処理済みメッシュを固定長ベクトルへ変換します。
