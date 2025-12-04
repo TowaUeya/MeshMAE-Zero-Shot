@@ -97,6 +97,14 @@ def repair_mesh(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     elif hasattr(trimesh.repair, "fill_holes"):
         trimesh.repair.fill_holes(mesh)
 
+    try:
+        mesh.process(validate=True)
+    except IndexError as exc:
+        # Some trimesh versions can raise IndexError inside fix_normals when
+        # winding repair encounters inconsistent adjacency. Retry with a less
+        # strict pass to keep processing moving.
+        logging.warning("trimesh.process(validate=True) failed (%s); retrying with validate=False", exc)
+        mesh.process(validate=False)
     mesh.process(validate=True)
     return mesh
 
