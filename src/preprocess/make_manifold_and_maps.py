@@ -73,11 +73,38 @@ def simplify_mesh(mesh: trimesh.Trimesh, target_faces: int) -> trimesh.Trimesh:
 
 
 def repair_mesh(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
-    mesh.remove_duplicate_faces()
-    mesh.remove_unreferenced_vertices()
-    mesh.remove_degenerate_faces()
-    mesh.fill_holes()
-    mesh.process(validate=True)
+    """Run a tolerant set of repair ops across trimesh versions."""
+
+    # Newer trimesh versions dropped some instance helpers; prefer methods when
+    # available and fall back to trimesh.repair functions otherwise.
+    if hasattr(mesh, "remove_duplicate_faces"):
+        mesh.remove_duplicate_faces()
+    elif hasattr(trimesh.repair, "remove_duplicate_faces"):
+        trimesh.repair.remove_duplicate_faces(mesh)
+
+    if hasattr(mesh, "remove_unreferenced_vertices"):
+        mesh.remove_unreferenced_vertices()
+    elif hasattr(trimesh.repair, "remove_unreferenced_vertices"):
+        trimesh.repair.remove_unreferenced_vertices(mesh)
+
+    if hasattr(mesh, "remove_degenerate_faces"):
+        mesh.remove_degenerate_faces()
+    elif hasattr(trimesh.repair, "remove_degenerate_faces"):
+        trimesh.repair.remove_degenerate_faces(mesh)
+
+    if hasattr(mesh, "fill_holes"):
+        mesh.fill_holes()
+    elif hasattr(trimesh.repair, "fill_holes"):
+        trimesh.repair.fill_holes(mesh)
+
+    try:
+        mesh.process(validate=True)
+    except IndexError as exc:
+        # Some trimesh versions can raise IndexError inside fix_normals when
+        # winding repair encounters inconsistent adjacency. Retry with a less
+        # strict pass to keep processing moving.
+        logging.warning("trimesh.process(validate=True) failed (%s); retrying with validate=False", exc)
+        mesh.process(validate=False)
     return mesh
 
 
