@@ -115,6 +115,7 @@ def repair_mesh(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
         # strict pass to keep processing moving.
         logging.warning("trimesh.process(validate=True) failed (%s); retrying with validate=False", exc)
         mesh.process(validate=False)
+    mesh.process(validate=True)
     return mesh
 
 
