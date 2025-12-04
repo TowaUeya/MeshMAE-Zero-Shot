@@ -93,7 +93,37 @@ python -m src.preprocess.make_manifold_and_maps \
   --metadata datasets/fossils_maps/processing_metadata.json
 ```
 
- 処理後は `datasets/fossils_maps/` 以下に元ディレクトリ構造を保ったまま保存され、面数やスケール、MAPS 有無を記録した JSON マニフェストが出力されます。
+処理後は `datasets/fossils_maps/` 以下に元ディレクトリ構造を保ったまま保存され、面数やスケール、MAPS 有無を記録した JSON マニフェストが出力されます。
+
+#### 二次デシメーションに必要なライブラリが入っているか確認する
+
+`trimesh` の `simplify_quadratic_decimation` を使うには、Open3D などの外部バックエンドが必要です。以下のコマンドで依存関係が導入済みかを確認できます。
+
+- Python パッケージの存在とバージョンを確認
+
+  ```bash
+  python -m pip show trimesh open3d
+  ```
+
+- `simplify_quadratic_decimation` が呼べるかをスクリプトで確認
+
+  ```bash
+  python - <<'PY'
+  import trimesh
+
+  print("trimesh version:", trimesh.__version__)
+  print("has simplify_quadratic_decimation:", hasattr(trimesh.Trimesh(), "simplify_quadratic_decimation"))
+  
+  # Open3D が検出されているかの目安（簡易チェック）
+  try:
+      import open3d as o3d  # noqa: F401
+      print("open3d is importable")
+  except Exception as exc:  # noqa: BLE001
+      print("open3d not available:", exc)
+  PY
+  ```
+
+- `simplify_quadratic_decimation` が存在しない場合は、`pip install "trimesh[easy]" open3d` などでバックエンドを追加してください。インストール後に上記チェックを再実行し、`has simplify_quadratic_decimation: True` になることを確認すると二次デシメーションを利用できます。
 
 #### SubdivNet を用いた MAPS 生成手順
 
