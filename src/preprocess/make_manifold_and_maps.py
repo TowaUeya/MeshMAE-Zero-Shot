@@ -64,10 +64,20 @@ def simplify_mesh(mesh: trimesh.Trimesh, target_faces: int) -> trimesh.Trimesh:
         simplified = mesh.simplify_quadratic_decimation(target_faces)
         return simplified
 
+    if hasattr(mesh, "simplify_vertex_clustering"):
+        bbox_extent = mesh.bounding_box.extents
+        # Approximate voxel size to end near the requested face count while
+        # staying conservative to avoid degenerate output.
+        max_extent = float(bbox_extent.max()) or 1.0
+        voxel_size = max_extent / max(target_faces, 1) ** (1 / 3)
+        simplified = mesh.simplify_vertex_clustering(voxel_size=voxel_size)
+        return simplified
+
     # Fallback: perform iterative midpoint decimation by clustering vertices.
     logging.warning("Quadratic decimation unavailable; using voxel downsampling fallback.")
     bbox_extent = mesh.bounding_box.extents
-    voxel_size = (bbox_extent.max() / max(target_faces, 1)) ** (1 / 3)
+    max_extent = float(bbox_extent.max()) or 1.0
+    voxel_size = (max_extent / max(target_faces, 1)) ** (1 / 3)
     simplified = mesh.voxelized(voxel_size).as_boxes()
     return simplified
 
@@ -130,7 +140,7 @@ def process_mesh(
     maps_extra_args: List[str],
 ) -> MeshProcessRecord:
     logging.info("Processing %s", source_path)
-    mesh = trimesh.load_mesh(source_path, process=True)
+    mesh = trimesh.load_mesh(source_path, process=False)
     original_faces = len(mesh.faces)
     mesh = repair_mesh(mesh)
     mesh = simplify_mesh(mesh, target_faces)
