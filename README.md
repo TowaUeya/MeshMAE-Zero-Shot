@@ -116,6 +116,10 @@ MeshMAE の README で案内されている通り、MAPS 生成には外部リ�
    - **`src_root` の意味**: MAPS 変換前の生データ（`.obj` など）が格納されたルートディレクトリを指します。スクリプトは `src_root/<ラベル>/<split>/xxx.obj` という階層をたどるので、SHREC11 なら `src_root/shark/train/1.obj` のようにクラス名（またはカテゴリ名）と `train` / `test` などの分割フォルダで整理してください。質問の例で `dst_root=./data/SHREC11-MAPS-48-4-split10` にダウンロード済みなら、対応する生データを `src_root=./data/shrec11-split10` のように並べる形になります。
    - **`dst_root` の意味**: MAPS でリメッシュした出力を保存するディレクトリです。`src_root` のフォルダ構造を保ったまま `<id>-<variation>.obj` という名称で書き出します。既にダウンロード済みの MAPS データを使うだけなら書き換える必要はなく、`src_root` も実行には使われません。
 
+   > **`datagen_maps.py` をそもそも書き換える必要があるか？**
+   > - いいえ、配布済みの MAPS データをそのまま使う場合は何も編集せず、SubdivNet を起動する必要もありません（MeshMAE 側では MAPS 出力フォルダを `--dataroot` で指すだけです）。
+   > - 自前の生データから MAPS を新規生成する場合のみ、上記のように `src_root` / `dst_root` などを自分のパスに変更し、`python datagen_maps.py` を実行してください。
+
 3. **MAPS 生成を実行**
 
    ```bash
