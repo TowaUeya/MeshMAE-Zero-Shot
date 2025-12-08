@@ -97,7 +97,7 @@ python -m src.preprocess.make_manifold_and_maps \
 
 #### 二次デシメーションに必要なライブラリが入っているか確認する
 
-`trimesh` 4.10 以降の二次デシメーションは `simplify_quadric_decimation` という名称で、内部的に [`fast-simplification`](https://pypi.org/project/fast-simplification/) を利用する薄いラッパーになっています。以下のコマンドで依存関係が導入済みかを確認できます。
+`trimesh` 4.10 以降の二次デシメーションは `simplify_quadric_decimation` という名称で、内部的に [`fast-simplification`](https://pypi.org/project/fast-simplification/) を利用する薄いラッパーになっています。以下のコマンドで依存関係が導入済みかを確認できます（`simplify_quadric_decimation` に目標面数を渡すときは `face_count=<目標>` というキーワード引数を使う必要があります。位置引数は 0〜1 の削減率 `percent` として解釈されるため注意してください）。
 
 - Python パッケージの存在とバージョンを確認
 
@@ -116,7 +116,7 @@ python -m src.preprocess.make_manifold_and_maps \
   PY
   ```
 
-- `simplify_quadric_decimation` が存在しない場合は、`python -m pip install -U fast-simplification` を実行してから上記チェックを再実行してください。Open3D は別系統のメッシュ簡略化 API を提供しますが、trimesh のこのメソッド自体は fast-simplification をバックエンドとして使います。
+- `simplify_quadric_decimation` が存在しない場合は、`python -m pip install -U fast-simplification` を実行してから上記チェックを再実行してください。Open3D は別系統のメッシュ簡略化 API を提供しますが、trimesh のこのメソッド自体は fast-simplification をバックエンドとして使います（fast-simplification のビルドに必要なツールチェーンがない場合は `pip install fast-simplification --no-binary=:all:` などでソースビルドを試し、C/C++ コンパイラや cmake を用意してください）。
 
 #### SubdivNet を用いた MAPS 生成手順
 

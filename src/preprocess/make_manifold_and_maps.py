@@ -50,26 +50,37 @@ def iter_mesh_files(root: Path) -> Iterable[Path]:
             yield path
 
 
-def simplify_mesh(mesh: trimesh.Trimesh, target_faces: int) -> trimesh.Trimesh:
+def simplify_mesh(mesh: trimesh.Trimesh, target_faces: Optional[int]) -> trimesh.Trimesh:
     """Simplify a mesh to approximately the given face count."""
 
-    if target_faces <= 0:
+    if target_faces is None:
+        return mesh
+
+    target_faces_int = int(target_faces)
+    if target_faces_int <= 0:
         return mesh
 
     current_faces = len(mesh.faces)
-    if current_faces <= target_faces:
+    if current_faces <= target_faces_int:
         return mesh
 
     if hasattr(mesh, "simplify_quadric_decimation"):
-        simplified = mesh.simplify_quadric_decimation(target_faces)
-        return simplified
+        try:
+            # Use face_count keyword; positional args are treated as percent (0-1).
+            simplified = mesh.simplify_quadric_decimation(face_count=target_faces_int)
+            return simplified
+        except Exception as exc:
+            logging.warning(
+                "simplify_quadric_decimation failed; falling back to clustering: %s", exc
+            )
 
     if hasattr(mesh, "simplify_vertex_clustering"):
         bbox_extent = mesh.bounding_box.extents
         # Approximate voxel size to end near the requested face count while
         # staying conservative to avoid degenerate output.
         max_extent = float(bbox_extent.max()) or 1.0
-        voxel_size = max_extent / max(target_faces, 1) ** (1 / 3)
+        voxel_size = max(target_faces_int, 1)
+        voxel_size = max_extent / voxel_size ** (1 / 3)
         simplified = mesh.simplify_vertex_clustering(voxel_size=voxel_size)
         return simplified
 
@@ -77,7 +88,7 @@ def simplify_mesh(mesh: trimesh.Trimesh, target_faces: int) -> trimesh.Trimesh:
     logging.warning("Quadratic decimation unavailable; using voxel downsampling fallback.")
     bbox_extent = mesh.bounding_box.extents
     max_extent = float(bbox_extent.max()) or 1.0
-    voxel_size = (max_extent / max(target_faces, 1)) ** (1 / 3)
+    voxel_size = (max_extent / max(target_faces_int, 1)) ** (1 / 3)
     simplified = mesh.voxelized(voxel_size).as_boxes()
     return simplified
 
