@@ -193,7 +193,7 @@ def process_mesh(
     )
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prepare fossil meshes for MeshMAE pipelines")
     parser.add_argument("--in", dest="input_dir", required=True, type=Path, help="Directory with raw meshes")
     parser.add_argument("--out", dest="output_dir", required=True, type=Path, help="Directory to save processed meshes")
@@ -212,7 +212,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--metadata", type=Path, default=None, help="Optional path to save processing metadata JSON")
     parser.add_argument("--log_level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
-    return parser.parse_args()
+
+    # Explicitly allow a standalone `--` after --maps_extra_args by accepting unknown
+    # tokens and attaching them to maps_extra_args when present.
+    args, unknown = parser.parse_known_args(argv)
+    if unknown:
+        if args.maps_extra_args:
+            args.maps_extra_args.extend(arg for arg in unknown if arg != "--")
+            unknown = []
+    if unknown:
+        parser.error(f"unrecognized arguments: {' '.join(unknown)}")
+
+    return args
 
 
 def main() -> None:
