@@ -200,7 +200,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target_faces", type=int, default=500, help="Target number of faces after simplification")
     parser.add_argument("--make_maps", action="store_true", help="Run external MAPS generation tool")
     parser.add_argument("--maps_script", type=Path, default=None, help="Path to MAPS generation executable")
-    parser.add_argument("--maps_extra_args", nargs="*", default=[], help="Additional arguments passed to MAPS script")
+    parser.add_argument(
+        "--maps_extra_args",
+        nargs=argparse.REMAINDER,
+        default=[],
+        help=(
+            "Additional arguments passed to MAPS script. Use `--maps_extra_args -- "
+            "<args...>` to forward flags verbatim; this option should be the last one "
+            "on the command line."
+        ),
+    )
     parser.add_argument("--metadata", type=Path, default=None, help="Optional path to save processing metadata JSON")
     parser.add_argument("--log_level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser.parse_args()
@@ -216,6 +225,8 @@ def main() -> None:
     generate_maps: bool = args.make_maps
     maps_script: Optional[Path] = args.maps_script
     maps_extra_args: List[str] = list(args.maps_extra_args)
+    if maps_extra_args and maps_extra_args[0] == "--":
+        maps_extra_args = maps_extra_args[1:]
 
     if not input_dir.exists():
         raise FileNotFoundError(f"Input directory does not exist: {input_dir}")
