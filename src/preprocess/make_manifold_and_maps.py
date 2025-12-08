@@ -60,8 +60,8 @@ def simplify_mesh(mesh: trimesh.Trimesh, target_faces: int) -> trimesh.Trimesh:
     if current_faces <= target_faces:
         return mesh
 
-    if hasattr(mesh, "simplify_quadratic_decimation"):
-        simplified = mesh.simplify_quadratic_decimation(target_faces)
+    if hasattr(mesh, "simplify_quadric_decimation"):
+        simplified = mesh.simplify_quadric_decimation(target_faces)
         return simplified
 
     if hasattr(mesh, "simplify_vertex_clustering"):

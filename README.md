@@ -97,33 +97,26 @@ python -m src.preprocess.make_manifold_and_maps \
 
 #### 二次デシメーションに必要なライブラリが入っているか確認する
 
-`trimesh` の `simplify_quadratic_decimation` を使うには、Open3D などの外部バックエンドが必要です。以下のコマンドで依存関係が導入済みかを確認できます。
+`trimesh` 4.10 以降の二次デシメーションは `simplify_quadric_decimation` という名称で、内部的に [`fast-simplification`](https://pypi.org/project/fast-simplification/) を利用する薄いラッパーになっています。以下のコマンドで依存関係が導入済みかを確認できます。
 
 - Python パッケージの存在とバージョンを確認
 
   ```bash
-  python -m pip show trimesh open3d
+  python -m pip show trimesh fast-simplification open3d
   ```
 
-- `simplify_quadratic_decimation` が呼べるかをスクリプトで確認
+- `simplify_quadric_decimation` が呼べるかをスクリプトで確認
 
   ```bash
   python - <<'PY'
   import trimesh
 
   print("trimesh version:", trimesh.__version__)
-  print("has simplify_quadratic_decimation:", hasattr(trimesh.Trimesh(), "simplify_quadratic_decimation"))
-  
-  # Open3D が検出されているかの目安（簡易チェック）
-  try:
-      import open3d as o3d  # noqa: F401
-      print("open3d is importable")
-  except Exception as exc:  # noqa: BLE001
-      print("open3d not available:", exc)
+  print("has simplify_quadric_decimation:", hasattr(trimesh.Trimesh(), "simplify_quadric_decimation"))
   PY
   ```
 
-- `simplify_quadratic_decimation` が存在しない場合は、`pip install "trimesh[easy]" open3d` などでバックエンドを追加してください。インストール後に上記チェックを再実行し、`has simplify_quadratic_decimation: True` になることを確認すると二次デシメーションを利用できます。
+- `simplify_quadric_decimation` が存在しない場合は、`python -m pip install -U fast-simplification` を実行してから上記チェックを再実行してください。Open3D は別系統のメッシュ簡略化 API を提供しますが、trimesh のこのメソッド自体は fast-simplification をバックエンドとして使います。
 
 #### SubdivNet を用いた MAPS 生成手順
 
