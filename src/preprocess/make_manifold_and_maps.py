@@ -214,10 +214,13 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--log_level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
 
     # Explicitly allow a standalone `--` after --maps_extra_args by accepting unknown
-    # tokens and attaching them to maps_extra_args when present.
+    # tokens and attaching them to maps_extra_args when present. Also tolerate
+    # invocations where the separator itself ends up in "unknown" by checking for it
+    # explicitly.
     args, unknown = parser.parse_known_args(argv)
     if unknown:
-        if args.maps_extra_args:
+        seen_separator = "--" in unknown or "--" in args.maps_extra_args
+        if args.maps_extra_args or seen_separator:
             args.maps_extra_args.extend(arg for arg in unknown if arg != "--")
             unknown = []
     if unknown:
@@ -235,9 +238,7 @@ def main() -> None:
     target_faces: int = args.target_faces
     generate_maps: bool = args.make_maps
     maps_script: Optional[Path] = args.maps_script
-    maps_extra_args: List[str] = list(args.maps_extra_args)
-    if maps_extra_args and maps_extra_args[0] == "--":
-        maps_extra_args = maps_extra_args[1:]
+    maps_extra_args: List[str] = [arg for arg in args.maps_extra_args if arg != "--"]
 
     if not input_dir.exists():
         raise FileNotFoundError(f"Input directory does not exist: {input_dir}")
