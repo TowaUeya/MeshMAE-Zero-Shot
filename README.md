@@ -94,7 +94,7 @@ python -m src.preprocess.make_manifold_and_maps \
   --maps_extra_args datagen_maps.py -- --base_size 96 --depth 3 --max_base_size 192
 ```
 
-`--maps_script` には実行可能ファイルを渡す必要があります。`datagen_maps.py` を直接指定すると実行権限や shebang の有無に依存して `Exec format error` になることがあるため、上記のように **利用中の仮想環境の Python インタプリタ**（`sys.executable`）を明示的に渡し、`--maps_extra_args` でスクリプトパスと MAPS パラメータを引数として渡す形を推奨します。`--maps_extra_args` は "以降すべて" をそのまま MAPS 側へ渡すリマインダ引数として扱われるため、このオプションはコマンドの一番最後に置いてください。`--` センチネルはあってもなくても構いませんが、前処理スクリプトのオプションと MAPS 用フラグを視覚的に区切る目的で挟んでおくと安全です。スクリプトは `--maps_script` と `--maps_extra_args` の後ろにメッシュパス・出力先を付けた順序で呼び出されるため、`python datagen_maps.py --base_size 96 --depth 3 <mesh> <out>` のように Python 経由でも直接実行でも同じ引数並びになります。この方法なら OS / シェルの違いに左右されず、常に正しい Python で外部スクリプトを起動できます。
+`--maps_script` には実行可能ファイルを渡す必要があります。`datagen_maps.py` を直接指定すると実行権限や shebang の有無に依存して `Exec format error` になることがあるため、上記のように **利用中の仮想環境の Python インタプリタ**（`sys.executable`）を明示的に渡し、`--maps_extra_args` でスクリプトパスと MAPS パラメータを引数として渡す形を推奨します。`--maps_extra_args` は "以降すべて" をそのまま MAPS 側へ渡すリマインダ引数として扱われるため、このオプションはコマンドの一番最後に置いてください。`--` センチネルはあってもなくても構いませんが、前処理スクリプト側で自動的に取り除かれ、残りの引数だけが MAPS コマンドにフォワードされます。スクリプトは `--maps_script` と `--maps_extra_args` の後ろにメッシュパス・出力先を付けた順序で呼び出されるため、`python datagen_maps.py --base_size 96 --depth 3 <mesh> <out>` のように Python 経由でも直接実行でも同じ引数並びになります。この方法なら OS / シェルの違いに左右されず、常に正しい Python で外部スクリプトを起動できます。
 
 処理後は `datasets/fossils_maps/` 以下に元ディレクトリ構造を保ったまま保存され、面数やスケール、MAPS 有無を記録した JSON マニフェストが出力されます。
 

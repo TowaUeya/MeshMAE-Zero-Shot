@@ -193,7 +193,7 @@ def process_mesh(
     )
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prepare fossil meshes for MeshMAE pipelines")
     parser.add_argument("--in", dest="input_dir", required=True, type=Path, help="Directory with raw meshes")
     parser.add_argument("--out", dest="output_dir", required=True, type=Path, help="Directory to save processed meshes")
@@ -212,7 +212,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--metadata", type=Path, default=None, help="Optional path to save processing metadata JSON")
     parser.add_argument("--log_level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
-    return parser.parse_args()
+
+    # Explicitly allow a standalone `--` after --maps_extra_args by accepting unknown
+    # tokens and attaching them to maps_extra_args when present. Also tolerate
+    # invocations where the separator itself ends up in "unknown" by checking for it
+    # explicitly.
+    args, unknown = parser.parse_known_args(argv)
+    if unknown:
+        seen_separator = "--" in unknown or "--" in args.maps_extra_args
+        if args.maps_extra_args or seen_separator:
+            args.maps_extra_args.extend(arg for arg in unknown if arg != "--")
+            unknown = []
+    if unknown:
+        parser.error(f"unrecognized arguments: {' '.join(unknown)}")
+
+    return args
 
 
 def main() -> None:
@@ -224,9 +238,7 @@ def main() -> None:
     target_faces: int = args.target_faces
     generate_maps: bool = args.make_maps
     maps_script: Optional[Path] = args.maps_script
-    maps_extra_args: List[str] = list(args.maps_extra_args)
-    if maps_extra_args and maps_extra_args[0] == "--":
-        maps_extra_args = maps_extra_args[1:]
+    maps_extra_args: List[str] = [arg for arg in args.maps_extra_args if arg != "--"]
 
     if not input_dir.exists():
         raise FileNotFoundError(f"Input directory does not exist: {input_dir}")
