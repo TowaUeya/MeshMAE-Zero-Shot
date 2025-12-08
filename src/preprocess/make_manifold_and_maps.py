@@ -131,7 +131,14 @@ def repair_mesh(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
 
 
 def run_maps_generation(script: Path, mesh_path: Path, output_dir: Path, extra_args: List[str]) -> bool:
-    command = [str(script), str(mesh_path), str(output_dir)] + extra_args
+    # Allow passing either the MAPS executable directly or a Python interpreter with the
+    # actual MAPS script in `extra_args`. Place `extra_args` before mesh/output so the
+    # invocation works for both styles:
+    #   - maps_script = datagen_maps.py, extra_args = []
+    #       => datagen_maps.py <mesh> <output>
+    #   - maps_script = python, extra_args = [datagen_maps.py]
+    #       => python datagen_maps.py <mesh> <output>
+    command = [str(script)] + list(extra_args) + [str(mesh_path), str(output_dir)]
     logging.info("Running MAPS command: %s", " ".join(command))
     completed = subprocess.run(command, check=False, capture_output=True, text=True)
     if completed.returncode != 0:
