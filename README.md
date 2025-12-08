@@ -81,7 +81,7 @@ pip install -r env/requirements.txt
 ## ステップ別手順
 
 ### 1. メッシュ前処理
-MeshMAE の実験は多様体メッシュで約500面、MAPS 階層が整備されていることを前提としています。本リポジトリのラッパースクリプトから公式ツールチェーンを呼び出し、必要な加工を自動化します。`--make_maps` を指定した場合は、SubdivNet の `datagen_maps.py`（もしくは互換スクリプト）を `--maps_script` で渡してください。
+ MeshMAE の実験は多様体メッシュで約500面、MAPS 階層が整備されていることを前提としています。本リポジトリのラッパースクリプトから公式ツールチェーンを呼び出し、必要な加工を自動化します。`--make_maps` を指定した場合は、付属の `datagen_maps.py`（SubdivNet 由来、CLI 対応済み）を `--maps_script` として渡すのが簡単です。
 
 ```bash
 python -m src.preprocess.make_manifold_and_maps \
@@ -90,11 +90,11 @@ python -m src.preprocess.make_manifold_and_maps \
   --target_faces 500 \
   --make_maps \
   --maps_script "$(python -c 'import sys; print(sys.executable)')" \
-  --maps_extra_args ../SubdivNet/datagen_maps.py \
+  --maps_extra_args datagen_maps.py --base_size 96 --depth 3 --max_base_size 192 \
   --metadata datasets/fossils_maps/processing_metadata.json
 ```
 
-`--maps_script` には実行可能ファイルを渡す必要があります。`datagen_maps.py` を直接指定すると実行権限や shebang の有無に依存して `Exec format error` になることがあるため、上記のように **利用中の仮想環境の Python インタプリタ**（`sys.executable`）を明示的に渡し、`--maps_extra_args` でスクリプトパスを引数として渡す形を推奨します。スクリプトは `--maps_script` と `--maps_extra_args` の後ろにメッシュパス・出力先を付けた順序で呼び出されるため、`python datagen_maps.py <mesh> <out>` のように Python 経由でも直接実行でも同じ引数並びになります。この方法なら OS / シェルの違いに左右されず、常に正しい Python で外部スクリプトを起動できます。
+`--maps_script` には実行可能ファイルを渡す必要があります。`datagen_maps.py` を直接指定すると実行権限や shebang の有無に依存して `Exec format error` になることがあるため、上記のように **利用中の仮想環境の Python インタプリタ**（`sys.executable`）を明示的に渡し、`--maps_extra_args` でスクリプトパスと MAPS パラメータを引数として渡す形を推奨します。スクリプトは `--maps_script` と `--maps_extra_args` の後ろにメッシュパス・出力先を付けた順序で呼び出されるため、`python datagen_maps.py --base_size 96 --depth 3 <mesh> <out>` のように Python 経由でも直接実行でも同じ引数並びになります。この方法なら OS / シェルの違いに左右されず、常に正しい Python で外部スクリプトを起動できます。
 
 処理後は `datasets/fossils_maps/` 以下に元ディレクトリ構造を保ったまま保存され、面数やスケール、MAPS 有無を記録した JSON マニフェストが出力されます。
 
@@ -121,44 +121,38 @@ python -m src.preprocess.make_manifold_and_maps \
 
 - `simplify_quadric_decimation` が存在しない場合は、`python -m pip install -U fast-simplification` を実行してから上記チェックを再実行してください。Open3D は別系統のメッシュ簡略化 API を提供しますが、trimesh のこのメソッド自体は fast-simplification をバックエンドとして使います（fast-simplification のビルドに必要なツールチェーンがない場合は `pip install fast-simplification --no-binary=:all:` などでソースビルドを試し、C/C++ コンパイラや cmake を用意してください）。
 
-#### SubdivNet を用いた MAPS 生成手順
+#### MAPS 生成手順（SubdivNet 依存 / 付属スクリプト利用）
 
-MeshMAE の README で案内されている通り、MAPS 生成には外部リポジトリ [SubdivNet](https://github.com/lzhengning/SubdivNet) をそのまま利用する想定です。本リポジトリには MAPS 生成スクリプトを同梱していないため、以下の手順で SubdivNet を取得し `datagen_maps.py` を実行してください。
+MAPS 自体は SubdivNet の `maps` 実装に依存しますが、呼び出しやすいよう本リポジトリに CLI 対応済みの `datagen_maps.py` を同梱しています。`maps` モジュール（SubdivNet を `pip install -e` するか、`PYTHONPATH` に追加）とその依存パッケージを用意した上で、次のいずれかの方法で実行してください。
 
-1. **SubdivNet を取得**
+1. **単一メッシュ（または `make_manifold_and_maps.py` からの委譲）**
+
+   ```bash
+   python datagen_maps.py --base_size 96 --depth 3 input.obj output.obj
+   ```
+
+   `base_size=96`, `depth=3`, `max_base_size=192` は化石データ向けの保守的な推奨値です。`make_manifold_and_maps.py` から呼ぶ場合は前述の例のように `--maps_extra_args` へ同じオプションを渡します。
+
+2. **データセット全体（フォルダ構造が `<src>/<label>/<split>/*.obj` の場合）**
+
+   ```bash
+   python datagen_maps.py --config FOSSILS --n_worker 8
+   ```
+
+   FOSSILS 設定は `src_root=../MeshMAE-Zero-Shot/datasets/fossils_raw`、`dst_root=../MeshMAE-Zero-Shot/datasets/fossils_maps`、`n_variation=1`、`base_size=96`、`max_base_size=192`、`depth=3` を既定にしています。ラベル/分割フォルダが存在しない場合は、`make_manifold_and_maps.py` 経由で単一メッシュモードを使ってください（フォルダ構造を気にせず MAPS 出力が得られます）。
+
+3. **SubdivNet オリジナル手順を使いたい場合**
 
    ```bash
    git clone https://github.com/lzhengning/SubdivNet
    cd SubdivNet
    pip install -r requirements.txt  # triangle, pymeshlab, shapely, networkx, rtree など
+   python datagen_maps.py  # 必要に応じて src_root/dst_root を編集
    ```
 
-   依存関係や利用方法の詳細は SubdivNet の README を参照してください（`datagen_maps.py` の設定を編集して自前データを MAPS にリメッシュする運用が案内されています）。
+   配布済み MAPS データをそのまま使うだけなら、生成処理を回す必要はありません。
 
-2. **`datagen_maps.py` の設定を編集**
-
-   ファイル内の設定ディクショナリで `src_root`（入力フォルダ）、`dst_root`（出力フォルダ）などを自前のパスに書き換えます。コマンドライン引数ではなく「設定を書き換えてから実行する」スタイルです。
-
-   - **`src_root` の意味**: MAPS 変換前の生データ（`.obj` など）が格納されたルートディレクトリを指します。スクリプトは `src_root/<ラベル>/<split>/xxx.obj` という階層をたどるので、SHREC11 なら `src_root/shark/train/1.obj` のようにクラス名（またはカテゴリ名）と `train` / `test` などの分割フォルダで整理してください。質問の例で `dst_root=./data/SHREC11-MAPS-48-4-split10` にダウンロード済みなら、対応する生データを `src_root=./data/shrec11-split10` のように並べる形になります。
-   - **`dst_root` の意味**: MAPS でリメッシュした出力を保存するディレクトリです。`src_root` のフォルダ構造を保ったまま `<id>-<variation>.obj` という名称で書き出します。既にダウンロード済みの MAPS データを使うだけなら書き換える必要はなく、`src_root` も実行には使われません。
-
-   > **`datagen_maps.py` をそもそも書き換える必要があるか？**
-   > - いいえ、配布済みの MAPS データをそのまま使う場合は何も編集せず、SubdivNet を起動する必要もありません（MeshMAE 側では MAPS 出力フォルダを `--dataroot` で指すだけです）。
-   > - 自前の生データから MAPS を新規生成する場合のみ、上記のように `src_root` / `dst_root` などを自分のパスに変更し、`python datagen_maps.py` を実行してください。
-
-3. **MAPS 生成を実行**
-
-   ```bash
-   python datagen_maps.py
-   ```
-
-   MAPS 化は失敗することもあるため、スクリプト冒頭コメントに記載されているようにベースサイズを大きくする／入力面数を事前に減らす／試行回数を増やす等の対策を試みてください。
-
-4. **MeshMAE 側への配置**
-
-   生成された MAPS 出力フォルダを本リポジトリ直下に作成した `datasets/` 配下へ配置し、MeshMAE 実行時には `--dataroot` でそのフォルダを指します（例: `--dataroot ./datasets/Manifold40-MAPS-96-3/`）。
-
-SubdivNet の `datagen_maps.py` は `--maps_script /path/to/datagen_maps.py` でパスを渡して呼び出すか、必要に応じて SubdivNet のモジュールを `PYTHONPATH` に追加して `from maps import MAPS` として直接利用することも可能です。特にこだわりがなければ「外部スクリプトをそのまま実行する」方式が最も簡単です。
+生成された MAPS 出力フォルダを本リポジトリ直下に作成した `datasets/` 配下へ配置し、MeshMAE 実行時には `--dataroot` でそのフォルダを指します（例: `--dataroot ./datasets/Manifold40-MAPS-96-3/`）。
 
 ### 2. 自己教師あり学習の継続（ドメイン適応）
 #### 継続SSLの実行方法
