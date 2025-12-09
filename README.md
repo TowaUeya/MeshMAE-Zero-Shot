@@ -90,6 +90,7 @@ python -m src.preprocess.make_manifold_and_maps \
   --in datasets/fossils_raw \
   --out datasets/fossils_maps \
   --target_faces 500 \
+  --num_workers 0 \
   --make_maps \
   --maps_script ../SubdivNet/datagen_maps.py \
   --maps_extra_args --base_size 96 --depth 3 \
@@ -97,6 +98,28 @@ python -m src.preprocess.make_manifold_and_maps \
 ```
 
 `--maps_script` を省略した場合は `../SubdivNet/datagen_maps.py` を自動的に探します（見つからない場合はエラーになります）。`--maps_extra_args` は MAPS に渡す追加オプションを受け取るリマインダ引数で、コマンドの一番最後に置いてください（例: `--maps_extra_args --base_size 96 --depth 3`）。`--maps_script` には Python 実行ファイルではなく `datagen_maps.py` のパスを指定し、スクリプト本体は必ず subprocess 経由で起動されます。
+
+前処理の並列化は `--num_workers` で制御します。0 または 1 を指定すると従来どおり逐次処理になり、2 以上でその数だけプロセスを立ててメッシュを並列処理します。I/O 帯域や MAPS 生成の外部スクリプトがボトルネックになる場合は、CPU コア数より少なめの値に絞ると安定します。
+
+並列化なし（逐次処理）の例:
+
+```bash
+python -m src.preprocess.make_manifold_and_maps \
+  --in datasets/fossils_raw \
+  --out datasets/fossils_maps \
+  --target_faces 500 \
+  --num_workers 0
+```
+
+並列化ありの例（4 プロセス）:
+
+```bash
+python -m src.preprocess.make_manifold_and_maps \
+  --in datasets/fossils_raw \
+  --out datasets/fossils_maps \
+  --target_faces 500 \
+  --num_workers 4
+```
 
 処理後は `datasets/fossils_maps/` 以下に元ディレクトリ構造を保ったまま保存され、面数やスケール、MAPS 有無を記録した JSON マニフェストが出力されます。
 

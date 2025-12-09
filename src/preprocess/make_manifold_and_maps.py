@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import multiprocessing
 import subprocess
 import sys
 from dataclasses import dataclass, asdict
@@ -238,6 +239,15 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
             "on the command line."
         ),
     )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=0,
+        help=(
+            "Number of worker processes for parallel mesh processing. "
+            "Use 0 or 1 to run sequentially; values >1 enable parallel processing."
+        ),
+    )
     parser.add_argument("--metadata", type=Path, default=None, help="Optional path to save processing metadata JSON")
     parser.add_argument("--log_level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
 
@@ -267,6 +277,7 @@ def main() -> None:
     generate_maps: bool = args.make_maps
     maps_script: Optional[Path] = args.maps_script
     maps_extra_args: List[str] = [arg for arg in args.maps_extra_args if arg != "--"]
+    num_workers: int = max(args.num_workers, 0)
 
     if not input_dir.exists():
         raise FileNotFoundError(f"Input directory does not exist: {input_dir}")
@@ -291,17 +302,38 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     records: List[MeshProcessRecord] = []
 
-    for mesh_file in iter_mesh_files(input_dir):
-        record = process_mesh(
-            mesh_file,
-            input_dir,
-            output_dir,
-            target_faces,
-            generate_maps,
-            maps_script,
-            maps_extra_args,
-        )
-        records.append(record)
+    mesh_files = list(iter_mesh_files(input_dir))
+    if num_workers > 1:
+        logging.info("Running in parallel with %s workers", num_workers)
+        with multiprocessing.get_context("spawn").Pool(processes=num_workers) as pool:
+            records = pool.starmap(
+                process_mesh,
+                [
+                    (
+                        mesh_file,
+                        input_dir,
+                        output_dir,
+                        target_faces,
+                        generate_maps,
+                        maps_script,
+                        maps_extra_args,
+                    )
+                    for mesh_file in mesh_files
+                ],
+            )
+    else:
+        logging.info("Running sequentially (num_workers=%s)", num_workers)
+        for mesh_file in mesh_files:
+            record = process_mesh(
+                mesh_file,
+                input_dir,
+                output_dir,
+                target_faces,
+                generate_maps,
+                maps_script,
+                maps_extra_args,
+            )
+            records.append(record)
 
     metadata_path = args.metadata or (output_dir / "processing_metadata.json")
     payload = {
