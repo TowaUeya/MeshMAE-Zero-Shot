@@ -91,16 +91,24 @@ def run_maps(
     last_error: Optional[Exception] = None
 
     def _candidate_base_sizes() -> list[int]:
+        """Return a descending list of base sizes, always reaching 4 faces."""
+
         sizes: list[int] = []
         size = max(min(base_size, face_count), 4)
-        while size not in sizes:
-            sizes.append(size)
-            if size <= 8:
+
+        while True:
+            if size not in sizes:
+                sizes.append(size)
+
+            if size <= 4:
                 break
-            next_size = size // 2
-            if next_size < 4:
+
+            next_size = max(size // 2, 4)
+            if next_size == size:
                 break
+
             size = next_size
+
         return sizes
 
     for candidate_size in _candidate_base_sizes():
