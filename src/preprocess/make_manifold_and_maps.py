@@ -8,9 +8,10 @@ The script performs the following steps for each mesh inside the input directory
 5. (Optional) launches an external MAPS generation script for hierarchical subdivision.
 
 The MAPS generation is intentionally kept external. MeshMAE-compatible MAPS can be
-produced with the SubdivNet toolkit (`datagen_maps.py`). When `--make-maps` is set,
-provide `--maps-script` pointing to that executable. Any additional arguments for the
-MAPS script can be passed via `--maps-extra-args`.
+produced with the official SubdivNet `datagen_maps.py` script. When `--make-maps` is
+set, provide `--maps-script` pointing to the SubdivNet executable (the script is
+auto-detected from a sibling `../SubdivNet/datagen_maps.py` when available). Any
+additional arguments for the MAPS script can be passed via `--maps-extra-args`.
 """
 
 from __future__ import annotations
@@ -199,7 +200,15 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--out", dest="output_dir", required=True, type=Path, help="Directory to save processed meshes")
     parser.add_argument("--target_faces", type=int, default=500, help="Target number of faces after simplification")
     parser.add_argument("--make_maps", action="store_true", help="Run external MAPS generation tool")
-    parser.add_argument("--maps_script", type=Path, default=None, help="Path to MAPS generation executable")
+    parser.add_argument(
+        "--maps_script",
+        type=Path,
+        default=None,
+        help=(
+            "Path to the SubdivNet datagen_maps.py executable. When omitted, the script "
+            "tries ../SubdivNet/datagen_maps.py automatically."
+        ),
+    )
     parser.add_argument(
         "--maps_extra_args",
         nargs=argparse.REMAINDER,
@@ -242,6 +251,21 @@ def main() -> None:
 
     if not input_dir.exists():
         raise FileNotFoundError(f"Input directory does not exist: {input_dir}")
+
+    if generate_maps:
+        if maps_script is None:
+            candidate = Path(__file__).resolve().parents[2] / "SubdivNet" / "datagen_maps.py"
+            if candidate.exists():
+                maps_script = candidate
+                logging.info("Auto-detected SubdivNet MAPS script at %s", candidate)
+            else:
+                raise FileNotFoundError(
+                    "MAPS generation requested but no --maps_script was provided and "
+                    "../SubdivNet/datagen_maps.py was not found. Clone https://github.com/"
+                    "lzhengning/SubdivNet next to this repository or pass --maps_script."
+                )
+        elif not maps_script.exists():
+            raise FileNotFoundError(f"Provided MAPS script does not exist: {maps_script}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     records: List[MeshProcessRecord] = []

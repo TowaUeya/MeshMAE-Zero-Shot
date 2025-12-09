@@ -81,7 +81,7 @@ pip install -r env/requirements.txt
 ## ステップ別手順
 
 ### 1. メッシュ前処理
- MeshMAE の実験は多様体メッシュで約500面、MAPS 階層が整備されていることを前提としています。本リポジトリのラッパースクリプトから公式ツールチェーンを呼び出し、必要な加工を自動化します。`--make_maps` を指定した場合は、付属の `datagen_maps.py`（SubdivNet 由来、CLI 対応済み）を `--maps_script` として渡すのが簡単です。
+ MeshMAE の実験は多様体メッシュで約500面、MAPS 階層が整備されていることを前提としています。本リポジトリのラッパースクリプトから公式ツールチェーンを呼び出し、必要な加工を自動化します。`--make_maps` を指定した場合は、公式 SubdivNet リポジトリの `datagen_maps.py` をそのまま `--maps_script` に渡してください（隣接フォルダに `../SubdivNet/datagen_maps.py` がある場合は自動検出されます）。
 
 ```bash
 python -m src.preprocess.make_manifold_and_maps \
@@ -89,12 +89,12 @@ python -m src.preprocess.make_manifold_and_maps \
   --out datasets/fossils_maps \
   --target_faces 500 \
   --make_maps \
-  --maps_script "$(python -c 'import sys; print(sys.executable)')" \
+  --maps_script ../SubdivNet/datagen_maps.py \
   --metadata datasets/fossils_maps/processing_metadata.json \
-  --maps_extra_args datagen_maps.py -- --base_size 96 --depth 3 --max_base_size 192
+  --maps_extra_args --base_size 96 --depth 3 --max_base_size 192
 ```
 
-`--maps_script` には実行可能ファイルを渡す必要があります。`datagen_maps.py` を直接指定すると実行権限や shebang の有無に依存して `Exec format error` になることがあるため、上記のように **利用中の仮想環境の Python インタプリタ**（`sys.executable`）を明示的に渡し、`--maps_extra_args` でスクリプトパスと MAPS パラメータを引数として渡す形を推奨します。`--maps_extra_args` は "以降すべて" をそのまま MAPS 側へ渡すリマインダ引数として扱われるため、このオプションはコマンドの一番最後に置いてください。`--` センチネルはあってもなくても構いませんが、前処理スクリプト側で自動的に取り除かれ、残りの引数だけが MAPS コマンドにフォワードされます。スクリプトは `--maps_script` と `--maps_extra_args` の後ろにメッシュパス・出力先を付けた順序で呼び出されるため、`python datagen_maps.py --base_size 96 --depth 3 <mesh> <out>` のように Python 経由でも直接実行でも同じ引数並びになります。この方法なら OS / シェルの違いに左右されず、常に正しい Python で外部スクリプトを起動できます。
+`--maps_script` を省略した場合は `../SubdivNet/datagen_maps.py` を自動的に探します（見つからない場合はエラーになります）。`--maps_extra_args` は "以降すべて" をそのまま MAPS 側へ渡すリマインダ引数として扱われるため、このオプションはコマンドの一番最後に置いてください。スクリプトは `--maps_script` と `--maps_extra_args` の後ろにメッシュパス・出力先を付けた順序で呼び出されるため、`python ../SubdivNet/datagen_maps.py --base_size 96 --depth 3 <mesh> <out>` のように Python 経由でも直接実行でも同じ引数並びになります。
 
 処理後は `datasets/fossils_maps/` 以下に元ディレクトリ構造を保ったまま保存され、面数やスケール、MAPS 有無を記録した JSON マニフェストが出力されます。
 
@@ -121,23 +121,31 @@ python -m src.preprocess.make_manifold_and_maps \
 
 - `simplify_quadric_decimation` が存在しない場合は、`python -m pip install -U fast-simplification` を実行してから上記チェックを再実行してください。Open3D は別系統のメッシュ簡略化 API を提供しますが、trimesh のこのメソッド自体は fast-simplification をバックエンドとして使います（fast-simplification のビルドに必要なツールチェーンがない場合は `pip install fast-simplification --no-binary=:all:` などでソースビルドを試し、C/C++ コンパイラや cmake を用意してください）。
 
-#### MAPS 生成手順（SubdivNet 依存 / 付属スクリプト利用）
+#### MAPS 生成手順（公式 SubdivNet をそのまま利用）
 
-MAPS 自体は SubdivNet の `maps` 実装に依存しますが、呼び出しやすいよう本リポジトリに CLI 対応済みの `datagen_maps.py` を同梱しています。`maps` モジュール（SubdivNet を `pip install -e` するか、`PYTHONPATH` に追加）とその依存パッケージを用意した上で、次のいずれかの方法で実行してください。
+MAPS 自体は SubdivNet の `maps` 実装に依存します。改変版ではなく、公式リポジトリをそのまま隣接フォルダにクローンして利用してください。
+
+```bash
+git clone https://github.com/lzhengning/SubdivNet ../SubdivNet
+python -m pip install -r ../SubdivNet/requirements.txt
+python -m pip install -e ../SubdivNet  # maps モジュールを Python から参照できるようにする
+```
+
+`maps` モジュールとその依存パッケージを用意した上で、次のいずれかの方法で実行してください。
 
 1. **単一メッシュ（または `make_manifold_and_maps.py` からの委譲）**
 
-   ```bash
-   python datagen_maps.py --base_size 96 --depth 3 input.obj output.obj
-   ```
+  ```bash
+  python ../SubdivNet/datagen_maps.py --base_size 96 --depth 3 input.obj output.obj
+  ```
 
    `base_size=96`, `depth=3`, `max_base_size=192` は化石データ向けの保守的な推奨値です。`make_manifold_and_maps.py` から呼ぶ場合は前述の例のように `--maps_extra_args` へ同じオプションを渡します。
 
 2. **データセット全体（フォルダ構造が `<src>/<label>/<split>/*.obj` の場合）**
 
-   ```bash
-   python datagen_maps.py --config FOSSILS --n_worker 8
-   ```
+  ```bash
+  python ../SubdivNet/datagen_maps.py --config FOSSILS --n_worker 8
+  ```
 
    FOSSILS 設定は `src_root=../MeshMAE-Zero-Shot/datasets/fossils_raw`、`dst_root=../MeshMAE-Zero-Shot/datasets/fossils_maps`、`n_variation=1`、`base_size=96`、`max_base_size=192`、`depth=3` を既定にしています。ラベル/分割フォルダが存在しない場合は、`make_manifold_and_maps.py` 経由で単一メッシュモードを使ってください（フォルダ構造を気にせず MAPS 出力が得られます）。
 
