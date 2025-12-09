@@ -140,6 +140,7 @@ def run_maps_generation(script: Path, mesh_path: Path, output_dir: Path, extra_a
             lines = lines[-limit:]
         return "\n".join(lines)
 
+    output_dir.mkdir(parents=True, exist_ok=True)
     output_file = output_dir / f"{mesh_path.stem}_maps{mesh_path.suffix}"
     maps_dir = script.parent
     command = [sys.executable, str(script), *extra_args, str(mesh_path), str(output_file)]
@@ -152,20 +153,38 @@ def run_maps_generation(script: Path, mesh_path: Path, output_dir: Path, extra_a
         text=True,
     )
 
-    if completed.returncode != 0:
+    stdout_tail = _tail(completed.stdout)
+    stderr_tail = _tail(completed.stderr)
+    success = completed.returncode == 0 and output_file.exists()
+
+    if not success:
         logging.error(
-            "MAPS generation failed for %s (return code %s).\nstdout:\n%s\nstderr:\n%s",
+            "MAPS generation failed for %s (return code %s, output_exists=%s).\nstdout:\n%s\nstderr:\n%s",
             mesh_path.name,
             completed.returncode,
-            _tail(completed.stdout),
-            _tail(completed.stderr),
+            output_file.exists(),
+            stdout_tail,
+            stderr_tail,
         )
+        error_log = output_dir / "error.log"
+        with error_log.open("w", encoding="utf-8") as f:
+            f.write("Command: " + " ".join(command) + "\n")
+            f.write(f"Return code: {completed.returncode}\n")
+            f.write(f"Output path: {output_file}\n")
+            f.write("\n--- stdout ---\n")
+            f.write(completed.stdout or "<empty>\n")
+            f.write("\n--- stderr ---\n")
+            f.write(completed.stderr or "<empty>\n")
+
+        # Clean up empty directory trees (e.g., if writing error.log failed earlier).
+        if not any(output_dir.iterdir()):
+            output_dir.rmdir()
         return False
 
-    if completed.stdout:
-        logging.debug("MAPS generation stdout for %s: %s", mesh_path.name, _tail(completed.stdout))
-    if completed.stderr:
-        logging.debug("MAPS generation stderr for %s: %s", mesh_path.name, _tail(completed.stderr))
+    if stdout_tail:
+        logging.debug("MAPS generation stdout for %s: %s", mesh_path.name, stdout_tail)
+    if stderr_tail:
+        logging.debug("MAPS generation stderr for %s: %s", mesh_path.name, stderr_tail)
     return True
 
 
@@ -197,10 +216,9 @@ def process_mesh(
             logging.warning(notes)
         else:
             maps_output_dir = destination_path.parent / f"{destination_path.stem}_maps"
-            maps_output_dir.mkdir(parents=True, exist_ok=True)
             maps_generated = run_maps_generation(maps_script, destination_path, maps_output_dir, maps_extra_args)
             if not maps_generated:
-                notes = "MAPS command failed; see logs."
+                notes = "MAPS command failed; see logs in the maps directory."
 
     scale = float(np.linalg.norm(mesh.bounding_box.extents))
     return MeshProcessRecord(
