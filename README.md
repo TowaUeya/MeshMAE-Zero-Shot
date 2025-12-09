@@ -81,20 +81,19 @@ pip install -r env/requirements.txt
 ## ステップ別手順
 
 ### 1. メッシュ前処理
-MeshMAE の実験は多様体メッシュで約500面、MAPS 階層が整備されていることを前提としています。本リポジトリのラッパースクリプトから公式ツールチェーンを呼び出し、必要な加工を自動化します。`--make_maps` を指定した場合は、公式 SubdivNet リポジトリの `datagen_maps.py` をそのまま `--maps_script` に渡してください（隣接フォルダに `../SubdivNet/datagen_maps.py` がある場合は自動検出されます）。
+MeshMAE の実験は多様体メッシュで約500面、MAPS 階層が整備されていることを前提としています。本リポジトリのラッパースクリプトから公式ツールチェーンを呼び出し、必要な加工を自動化します。`--make_maps` を指定した場合でも SubdivNet の `datagen_maps.py` を直接叩かず、必ず `python -m src.preprocess.run_subdivnet_maps` をサブプロセスで起動します。`--subdivnet_root` で SubdivNet リポジトリのルート（例: `../SubdivNet`）を渡してください。
 
 #### MAPS 生成の呼び出し方法（デモ実行を避ける）
-SubdivNet の `datagen_maps.py` はそのまま実行すると `if __name__ == "__main__": MAPS_demo1()` が走り、同梱デモ `airplane.obj` を探しに行きます。本リポジトリでは、デモを起動せずに `make_MAPS_shape` 相当の処理のみ呼び出すため、`src.preprocess.run_subdivnet_maps` という薄い CLI ラッパーを別プロセスで起動します。ラッパーは次の動作を行います。
+SubdivNet の `datagen_maps.py` には `if __name__ == "__main__": MAPS_demo1()` が含まれ、直接実行すると `airplane.obj` を探すデモが走って失敗します。本リポジトリでは `src.preprocess.run_subdivnet_maps` という薄い CLI ラッパーを別プロセスで起動し、demo を踏まずに MAPS を生成します。ラッパーは次の動作を行います。
 
 - `--subdivnet_root` で渡されたパスを `PYTHONPATH` に追加し、`datagen_maps` と `maps.MAPS` を import する（親プロセスに SubdivNet の依存を混ぜない）。
-- 入力メッシュと出力パスを「絶対パス」で受け取り、`base_size` / `depth` / `max_base_size` を使って MAPS を生成する。
-- 出力ファイルは拡張子付き（例: `<outdir>/<stem>_MAPS.obj`）で保存し、`trimesh.export` の exporter 解決エラーを防ぐ。
+- 入力メッシュは **修復後・簡略化前** の形状を一時ファイルとして保存して渡す。MAPS の位相前提を守るため、簡略化で manifold を壊さないようにする。
+- `base_size` / `depth` / `max_base_size` は `--maps_extra_args` 経由で受け取り、拡張子付きの出力パス（例: `<outdir>/<stem>_MAPS.obj`）を必ず渡す。
 
-`make_manifold_and_maps.py` 側は常にこのラッパーを subprocess で呼び出します。前処理中に SubdivNet 側の `__main__` ブロックが実行されることはなくなり、`cwd` もいじらないため、入力/出力を絶対パスで渡せばパス解決事故を防げます（旧実装は SubdivNet を `cwd` にして相対パスで呼んでいたため、別の場所に MAPS が出力され `_maps` が空のまま残るケースがありました）。
+`make_manifold_and_maps.py` 側は常にこのラッパーを subprocess で呼び出します。前処理中に SubdivNet 側の `__main__` ブロックが実行されることはなくなり、入力/出力を絶対パスで渡すことでパス解決事故を防ぎます。
 
-- 面数削減後のメッシュは `<out>/<stem>.<ext>` に保存されます。500 面以下のメッシュは簡約処理をスキップします。
-- MAPS 出力は `<out>/<stem>_maps/` 配下に `<stem>_MAPS<ext>` が生成されます（`<ext>` は入力メッシュに倣います）。
-- MAPS が失敗した場合は空ディレクトリを残さず、`<stem>_maps/error.log` にコマンド・stdout・stderr が残ります。成功時のみ `_maps` ディレクトリが移動して確定します。
+- 簡略化後のメッシュは `<out>/<stem>.<ext>` に保存されます。500 面以下のメッシュは簡約処理をスキップします。
+- MAPS 出力は `<out>/<stem>_maps/` 配下に `<stem>_MAPS.<ext>` が生成されます。失敗した場合は空ディレクトリを残さず、必ず `<stem>_maps/error.log` が作成されます。
 
 ```bash
 python -m src.preprocess.make_manifold_and_maps \
@@ -103,14 +102,23 @@ python -m src.preprocess.make_manifold_and_maps \
   --target_faces 500 \
   --num_workers 0 \
   --make_maps \
-  --maps_script ../SubdivNet/datagen_maps.py \
-  --metadata datasets/fossils_maps/processing_metadata.json \
-  --maps_extra_args -- --base_size 96 --depth 3 --max_base_size 192
+  --subdivnet_root ../SubdivNet \
+  --maps_extra_args -- --base_size 96 --depth 3 --max_base_size 192 \
+  --metadata datasets/fossils_maps/processing_metadata.json
 ```
 
-`--maps_script` を省略した場合は `../SubdivNet/datagen_maps.py` を自動的に探します（見つからない場合はエラーになります）。`--maps_extra_args` で渡したいオプションは、すべて末尾に置くか、`--maps_extra_args -- --foo bar` のように区切ってください（`argparse.REMAINDER` で受け取るため）。SubdivNet の依存（`maps` パッケージが要求する `triangle`, `sortedcollections`, `networkx`, `rtree` など）は本リポジトリの `env/requirements.txt` には含まれていないため、必要に応じて SubdivNet 側の仮想環境にインストールしてください。
+`--subdivnet_root` を省略すると `../SubdivNet` を自動的に探します（`datagen_maps.py` が無い場合はエラーになります）。`--maps_extra_args` で渡したいオプションは、すべて末尾に置くか、`--maps_extra_args -- --foo bar` のように区切ってください（`argparse.REMAINDER` で受け取るため）。SubdivNet の依存（`maps` パッケージが要求する `triangle`, `sortedcollections`, `networkx`, `rtree` など）は本リポジトリの `env/requirements.txt` には含まれていないため、必要に応じて SubdivNet 側の仮想環境にインストールしてください。
 
+出力物の意味:
 
+- `<mesh>.<ext>`: 多様体化 + 簡略化後（target_faces=500）のメッシュ。
+- `<mesh>_maps/`: MAPS 生成結果。成功時は `<mesh>_MAPS.<ext>` を必ず含み、失敗時は `error.log` にコマンドと traceback が残ります。
+
+MAPS 生成で遭遇しやすいトラブルと回避策:
+
+- `airplane.obj not found`: `datagen_maps.py` のデモが起動しています。`--subdivnet_root` を指定し、`datagen_maps.py` を直接叩かないようにします。
+- `ValueError exporter not available`: 出力パスに拡張子が付いていません。`*_MAPS.<ext>` のようにファイル名を指定してください。
+- `KeyError` や `cycle_basis` 周りの `IndexError`: 入力メッシュの位相が MAPS の前提を満たしていません。修復後のメッシュを簡略化せずに MAPS へ渡す（本スクリプトの既定動作）か、watertight/winding を満たすかを確認してください。
 
 前処理の並列化は `--num_workers` で制御します。0 または 1 を指定すると従来どおり逐次処理になり、2 以上でその数だけプロセスを立ててメッシュを並列処理します。I/O 帯域や MAPS 生成の外部スクリプトがボトルネックになる場合は、CPU コア数より少なめの値に絞ると安定します。
 
@@ -169,32 +177,24 @@ python -m pip install -r ../SubdivNet/requirements.txt
 python -m pip install -e ../SubdivNet  # maps モジュールを Python から参照できるようにする
 ```
 
-`maps` モジュールとその依存パッケージを用意した上で、次のいずれかの方法で実行してください。`--maps_extra_args` は `argparse.REMAINDER` で受け取るため、前処理スクリプト側のオプション（`--metadata` など）は必ず `--maps_extra_args` より前に置き、その後に `--` を挟んで MAPS スクリプトへ渡したい引数を列挙します。
+`maps` モジュールとその依存パッケージを用意した上で、`datagen_maps.py` を直接叩くのではなく、本リポジトリのラッパー経由で実行してください（`__main__` に仕込まれたデモを踏むのを防ぐため）。`--maps_extra_args` は `argparse.REMAINDER` で受け取るため、前処理スクリプト側のオプション（`--metadata` など）は必ず `--maps_extra_args` より前に置き、その後に `--` を挟んで MAPS スクリプトへ渡したい引数を列挙します。
 
-1. **単一メッシュ（または `make_manifold_and_maps.py` からの委譲）**
+1. **単一メッシュを手動で MAPS 生成する場合**
 
   ```bash
-  python ../SubdivNet/datagen_maps.py --base_size 96 --depth 3 input.obj output.obj
+  python -m src.preprocess.run_subdivnet_maps \
+    --subdivnet_root ../SubdivNet \
+    --input input_repaired.obj \
+    --out-dir output_maps_dir \
+    --output-path output_maps_dir/input_repaired_MAPS.obj \
+    --base_size 96 --depth 3 --max_base_size 192
   ```
 
    `base_size=96`, `depth=3`, `max_base_size=192` は化石データ向けの保守的な推奨値です。`make_manifold_and_maps.py` から呼ぶ場合は前述の例のように `--maps_extra_args` へ同じオプションを渡します。
 
-2. **データセット全体（フォルダ構造が `<src>/<label>/<split>/*.obj` の場合）**
+2. **データセット全体をまとめて処理する場合**
 
-  ```bash
-  python ../SubdivNet/datagen_maps.py --config FOSSILS --n_worker 8
-  ```
-
-   FOSSILS 設定は `src_root=../MeshMAE-Zero-Shot/datasets/fossils_raw`、`dst_root=../MeshMAE-Zero-Shot/datasets/fossils_maps`、`n_variation=1`、`base_size=96`、`max_base_size=192`、`depth=3` を既定にしています。ラベル/分割フォルダが存在しない場合は、`make_manifold_and_maps.py` 経由で単一メッシュモードを使ってください（フォルダ構造を気にせず MAPS 出力が得られます）。
-
-3. **SubdivNet オリジナル手順を使いたい場合**
-
-   ```bash
-   git clone https://github.com/lzhengning/SubdivNet
-   cd SubdivNet
-   pip install -r requirements.txt  # triangle, pymeshlab, shapely, networkx, rtree など
-   python datagen_maps.py  # 必要に応じて src_root/dst_root を編集
-   ```
+   `make_manifold_and_maps.py` に `--make_maps` を付けて実行してください（上記の例）。SubdivNet オリジナルの `--config FOSSILS` などを使う場合も、demo が走らないように `run_subdivnet_maps` へパラメータを渡す形を推奨します。
 
 配布済み MAPS データをそのまま使うだけなら、生成処理を回す必要はありません。
 
