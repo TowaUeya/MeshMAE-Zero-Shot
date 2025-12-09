@@ -20,6 +20,7 @@ import argparse
 import json
 import logging
 import multiprocessing
+import os
 import subprocess
 import sys
 from dataclasses import dataclass, asdict
@@ -140,17 +141,24 @@ def run_maps_generation(script: Path, mesh_path: Path, output_dir: Path, extra_a
             lines = lines[-limit:]
         return "\n".join(lines)
 
+    script = script.resolve()
+    mesh_path = mesh_path.resolve()
+    output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     output_file = output_dir / f"{mesh_path.stem}_maps{mesh_path.suffix}"
-    maps_dir = script.parent
     command = [sys.executable, str(script), *extra_args, str(mesh_path), str(output_file)]
+    env = os.environ.copy()
+    pythonpath_entries = [str(script.parent)]
+    if env.get("PYTHONPATH"):
+        pythonpath_entries.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
     logging.info("Running MAPS command: %s", " ".join(command))
     completed = subprocess.run(
         command,
-        cwd=maps_dir,
         check=False,
         capture_output=True,
         text=True,
+        env=env,
     )
 
     stdout_tail = _tail(completed.stdout)
@@ -176,9 +184,11 @@ def run_maps_generation(script: Path, mesh_path: Path, output_dir: Path, extra_a
             f.write("\n--- stderr ---\n")
             f.write(completed.stderr or "<empty>\n")
 
-        # Clean up empty directory trees (e.g., if writing error.log failed earlier).
-        if not any(output_dir.iterdir()):
-            output_dir.rmdir()
+        # Clean up empty directory trees if the maps directory truly has no content.
+        if output_dir.exists():
+            entries = list(output_dir.iterdir())
+            if not entries:
+                output_dir.rmdir()
         return False
 
     if stdout_tail:
@@ -218,7 +228,7 @@ def process_mesh(
             maps_output_dir = destination_path.parent / f"{destination_path.stem}_maps"
             maps_generated = run_maps_generation(maps_script, destination_path, maps_output_dir, maps_extra_args)
             if not maps_generated:
-                notes = "MAPS command failed; see logs in the maps directory."
+                notes = f"MAPS command failed; see {maps_output_dir / 'error.log'} for details."
 
     scale = float(np.linalg.norm(mesh.bounding_box.extents))
     return MeshProcessRecord(

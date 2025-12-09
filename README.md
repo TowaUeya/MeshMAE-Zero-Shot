@@ -83,11 +83,11 @@ pip install -r env/requirements.txt
 ### 1. メッシュ前処理
 MeshMAE の実験は多様体メッシュで約500面、MAPS 階層が整備されていることを前提としています。本リポジトリのラッパースクリプトから公式ツールチェーンを呼び出し、必要な加工を自動化します。`--make_maps` を指定した場合は、公式 SubdivNet リポジトリの `datagen_maps.py` をそのまま `--maps_script` に渡してください（隣接フォルダに `../SubdivNet/datagen_maps.py` がある場合は自動検出されます）。
 
-MAPS 生成は常に subprocess で `sys.executable datagen_maps.py ...` を呼び出す方式に統一しています。importlib 経由で `datagen_maps.py` を読み込むと `from maps import MAPS` が失敗するため（Python のモジュール探索に SubdivNet 直下が含まれないため）、必ずスクリプトとして起動してカレントディレクトリを SubdivNet 直下に固定します。こうすることで venv 上の Python を確実に使い、相対 import も安定します。
+MAPS 生成は常に subprocess で venv 側の Python (`sys.executable datagen_maps.py ...`) を起動します。`importlib` で直接読み込むと `from maps import MAPS` が失敗するため、スクリプト起動が必須です。カレントディレクトリは変更せず、代わりに SubdivNet 直下を `PYTHONPATH` に追加して相対 import を解決します。
 
 - 面数削減後のメッシュは `<out>/<stem>.<ext>` に保存されます。
 - MAPS 出力は `<out>/<stem>_maps/` 配下に `<stem>_maps<ext>` のような拡張子付きファイルとして生成されます（`<ext>` は入力メッシュに倣います）。`trimesh` の `export` は拡張子または `file_type` が必須で、拡張子なしパスを渡すと `ValueError('exporter not available')` となるため、必ず拡張子付きで渡しています。
-- MAPS 実行コマンドは INFO ログに出力され、失敗した場合は `_maps` ディレクトリ内に `error.log` が残ります（stdout/stderr/コマンドが記録され、処理メタデータでは `maps_generated=false` になります）。
+- MAPS 実行コマンドは INFO ログに出力され、成功/失敗に関わらず `<stem>_maps/` ディレクトリが作成されます。失敗時は `_maps/error.log` にコマンド・stdout・stderr が記録され、処理メタデータでは `maps_generated=false` になります。
 
 ```bash
 python -m src.preprocess.make_manifold_and_maps \
@@ -97,11 +97,11 @@ python -m src.preprocess.make_manifold_and_maps \
   --num_workers 0 \
   --make_maps \
   --maps_script ../SubdivNet/datagen_maps.py \
-  --maps_extra_args --base_size 96 --depth 3 \
-  --metadata datasets/fossils_maps/processing_metadata.json
+  --metadata datasets/fossils_maps/processing_metadata.json \
+  --maps_extra_args -- --base_size 96 --depth 3
 ```
 
-`--maps_script` を省略した場合は `../SubdivNet/datagen_maps.py` を自動的に探します（見つからない場合はエラーになります）。`--maps_extra_args` は MAPS に渡す追加オプションを受け取るリマインダ引数で、コマンドの一番最後に置いてください（例: `--maps_extra_args --base_size 96 --depth 3`）。`--maps_script` には Python 実行ファイルではなく `datagen_maps.py` のパスを指定し、スクリプト本体は必ず subprocess 経由で起動されます。
+`--maps_script` を省略した場合は `../SubdivNet/datagen_maps.py` を自動的に探します（見つからない場合はエラーになります）。`--maps_extra_args` は MAPS に渡す追加オプションを受け取るリマインダ引数で、前処理スクリプト側のオプションをすべて記述した後に `--maps_extra_args -- --base_size 96 --depth 3` のように `--` を挟んで渡してください。`--maps_script` には Python 実行ファイルではなく `datagen_maps.py` のパスを指定し、スクリプト本体は必ず subprocess 経由で起動されます。
 
 前処理の並列化は `--num_workers` で制御します。0 または 1 を指定すると従来どおり逐次処理になり、2 以上でその数だけプロセスを立ててメッシュを並列処理します。I/O 帯域や MAPS 生成の外部スクリプトがボトルネックになる場合は、CPU コア数より少なめの値に絞ると安定します。
 
@@ -160,7 +160,7 @@ python -m pip install -r ../SubdivNet/requirements.txt
 python -m pip install -e ../SubdivNet  # maps モジュールを Python から参照できるようにする
 ```
 
-`maps` モジュールとその依存パッケージを用意した上で、次のいずれかの方法で実行してください。
+`maps` モジュールとその依存パッケージを用意した上で、次のいずれかの方法で実行してください。`--maps_extra_args` は `argparse.REMAINDER` で受け取るため、前処理スクリプト側のオプション（`--metadata` など）は必ず `--maps_extra_args` より前に置き、その後に `--` を挟んで MAPS スクリプトへ渡したい引数を列挙します。
 
 1. **単一メッシュ（または `make_manifold_and_maps.py` からの委譲）**
 
@@ -187,7 +187,11 @@ python -m pip install -e ../SubdivNet  # maps モジュールを Python から�
    python datagen_maps.py  # 必要に応じて src_root/dst_root を編集
    ```
 
-   配布済み MAPS データをそのまま使うだけなら、生成処理を回す必要はありません。
+配布済み MAPS データをそのまま使うだけなら、生成処理を回す必要はありません。
+
+> **Troubleshooting – MAPS ディレクトリが空に見える場合**
+>
+> 以前の実装では SubdivNet をカレントディレクトリにしたまま相対パスの入力/出力を渡していたため、MAPS の出力が別場所へ書き出され、`<stem>_maps/` が空のまま残る不具合がありました。現在は入力メッシュと出力先を絶対パスで渡し、`PYTHONPATH` に SubdivNet を追加することで、期待したフォルダに MAPS ファイルが生成されます。失敗時は `_maps/error.log` を確認してください。
 
 生成された MAPS 出力フォルダを本リポジトリ直下に作成した `datasets/` 配下へ配置し、MeshMAE 実行時には `--dataroot` でそのフォルダを指します（例: `--dataroot ./datasets/Manifold40-MAPS-96-3/`）。
 
