@@ -89,9 +89,9 @@ python -m src.preprocess.make_manifold_and_maps \
   --out datasets/fossils_maps \
   --target_faces 500 \
   --make_maps \
-  --maps_script ../SubdivNet/datagen_maps.py \
+  --maps_script "$(python -c 'import sys; print(sys.executable)')" \
   --metadata datasets/fossils_maps/processing_metadata.json \
-  --maps_extra_args --base_size 96 --depth 3 --max_base_size 192
+  --maps_extra_args ../SubdivNet/datagen_maps.py -- --base_size 96 --depth 3 --max_base_size 192
 ```
 
 `--maps_script` を省略した場合は `../SubdivNet/datagen_maps.py` を自動的に探します（見つからない場合はエラーになります）。`--maps_extra_args` は "以降すべて" をそのまま MAPS 側へ渡すリマインダ引数として扱われるため、このオプションはコマンドの一番最後に置いてください。スクリプトは `--maps_script` と `--maps_extra_args` の後ろにメッシュパス・出力先を付けた順序で呼び出されるため、`python ../SubdivNet/datagen_maps.py --base_size 96 --depth 3 <mesh> <out>` のように Python 経由でも直接実行でも同じ引数並びになります。
