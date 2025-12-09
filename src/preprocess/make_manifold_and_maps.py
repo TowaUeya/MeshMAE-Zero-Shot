@@ -17,6 +17,7 @@ additional arguments for the MAPS script can be passed via `--maps-extra-args`.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import logging
 import subprocess
@@ -132,6 +133,45 @@ def repair_mesh(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
 
 
 def run_maps_generation(script: Path, mesh_path: Path, output_dir: Path, extra_args: List[str]) -> bool:
+    def _parse_maps_shape_args(args: List[str]) -> tuple[int, int]:
+        parser = argparse.ArgumentParser(add_help=False)
+        parser.add_argument("--base_size", type=int, default=96)
+        parser.add_argument("--depth", type=int, default=3)
+        known, _ = parser.parse_known_args(args)
+        return known.base_size, known.depth
+
+    def _run_via_import(module_path: Path) -> bool:
+        base_size, depth = _parse_maps_shape_args(extra_args)
+        output_file = output_dir / f"{mesh_path.stem}_maps{mesh_path.suffix}"
+
+        spec = importlib.util.spec_from_file_location("maps_module", module_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Could not load module from {module_path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        if not hasattr(module, "make_MAPS_shape"):
+            raise AttributeError("datagen_maps.py does not expose make_MAPS_shape")
+
+        logging.info(
+            "Running MAPS via make_MAPS_shape from %s (base_size=%s, depth=%s)",
+            module_path,
+            base_size,
+            depth,
+        )
+        try:
+            module.make_MAPS_shape(str(mesh_path), str(output_file), base_size, depth)
+            return True
+        except Exception as exc:  # pragma: no cover - passthrough for subprocess fallback
+            logging.error("MAPS generation failed for %s: %s", mesh_path.name, exc)
+            return False
+
+    # Prefer importing SubdivNet's datagen_maps.py directly to avoid its default demo
+    # execution path (MAPS_demo1) when run as a script without arguments.
+    if script.name == "datagen_maps.py" and script.suffix == ".py":
+        return _run_via_import(script)
+
+    # Fallback: execute the script as an external process.
     # Allow passing either the MAPS executable directly or a Python interpreter with the
     # actual MAPS script in `extra_args`. Place `extra_args` before mesh/output so the
     # invocation works for both styles:
