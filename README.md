@@ -83,7 +83,11 @@ pip install -r env/requirements.txt
 ### 1. メッシュ前処理
 MeshMAE の実験は多様体メッシュで約500面、MAPS 階層が整備されていることを前提としています。本リポジトリのラッパースクリプトから公式ツールチェーンを呼び出し、必要な加工を自動化します。`--make_maps` を指定した場合は、公式 SubdivNet リポジトリの `datagen_maps.py` をそのまま `--maps_script` に渡してください（隣接フォルダに `../SubdivNet/datagen_maps.py` がある場合は自動検出されます）。
 
-MAPS 生成は常に subprocess で `sys.executable datagen_maps.py ...` を呼び出す方式に統一しています。importlib 経由で `datagen_maps.py` を読み込むと `from maps import MAPS` が失敗するため（Python のモジュール探索に SubdivNet 直下が含まれないため）、必ずスクリプトとして起動してカレントディレクトリを SubdivNet 直下に固定します。こうすることで venv 上の Python を確実に使い、相対 import も安定します。また MAPS 出力パスは `.obj` など拡張子付きになるよう内部で補完し、`trimesh` のエクスポータが拡張子推定に失敗する問題を避けています。
+MAPS 生成は常に subprocess で `sys.executable datagen_maps.py ...` を呼び出す方式に統一しています。importlib 経由で `datagen_maps.py` を読み込むと `from maps import MAPS` が失敗するため（Python のモジュール探索に SubdivNet 直下が含まれないため）、必ずスクリプトとして起動してカレントディレクトリを SubdivNet 直下に固定します。こうすることで venv 上の Python を確実に使い、相対 import も安定します。
+
+- 面数削減後のメッシュは `<out>/<stem>.<ext>` に保存されます。
+- MAPS 出力は `<out>/<stem>_maps/` 配下に `<stem>_maps<ext>` のような拡張子付きファイルとして生成されます（`<ext>` は入力メッシュに倣います）。`trimesh` の `export` は拡張子または `file_type` が必須で、拡張子なしパスを渡すと `ValueError('exporter not available')` となるため、必ず拡張子付きで渡しています。
+- MAPS 実行コマンドは INFO ログに出力され、失敗した場合は `_maps` ディレクトリ内に `error.log` が残ります（stdout/stderr/コマンドが記録され、処理メタデータでは `maps_generated=false` になります）。
 
 ```bash
 python -m src.preprocess.make_manifold_and_maps \
