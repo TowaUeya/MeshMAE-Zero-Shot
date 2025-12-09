@@ -81,7 +81,9 @@ pip install -r env/requirements.txt
 ## ステップ別手順
 
 ### 1. メッシュ前処理
- MeshMAE の実験は多様体メッシュで約500面、MAPS 階層が整備されていることを前提としています。本リポジトリのラッパースクリプトから公式ツールチェーンを呼び出し、必要な加工を自動化します。`--make_maps` を指定した場合は、公式 SubdivNet リポジトリの `datagen_maps.py` をそのまま `--maps_script` に渡してください（隣接フォルダに `../SubdivNet/datagen_maps.py` がある場合は自動検出されます）。`datagen_maps.py` をスクリプトとして実行すると内部のデモ関数 `MAPS_demo1()` が走ってしまうため、`make_manifold_and_maps.py` 側でモジュールとして読み込んで `make_MAPS_shape` だけを直接呼び出すようになっています。
+MeshMAE の実験は多様体メッシュで約500面、MAPS 階層が整備されていることを前提としています。本リポジトリのラッパースクリプトから公式ツールチェーンを呼び出し、必要な加工を自動化します。`--make_maps` を指定した場合は、公式 SubdivNet リポジトリの `datagen_maps.py` をそのまま `--maps_script` に渡してください（隣接フォルダに `../SubdivNet/datagen_maps.py` がある場合は自動検出されます）。
+
+MAPS 生成は常に subprocess で `sys.executable datagen_maps.py ...` を呼び出す方式に統一しています。importlib 経由で `datagen_maps.py` を読み込むと `from maps import MAPS` が失敗するため（Python のモジュール探索に SubdivNet 直下が含まれないため）、必ずスクリプトとして起動してカレントディレクトリを SubdivNet 直下に固定します。こうすることで venv 上の Python を確実に使い、相対 import も安定します。また MAPS 出力パスは `.obj` など拡張子付きになるよう内部で補完し、`trimesh` のエクスポータが拡張子推定に失敗する問題を避けています。
 
 ```bash
 python -m src.preprocess.make_manifold_and_maps \
@@ -94,7 +96,7 @@ python -m src.preprocess.make_manifold_and_maps \
   --metadata datasets/fossils_maps/processing_metadata.json
 ```
 
-`--maps_script` を省略した場合は `../SubdivNet/datagen_maps.py` を自動的に探します（見つからない場合はエラーになります）。`--maps_extra_args` は MAPS に渡す追加オプションを受け取るリマインダ引数で、コマンドの一番最後に置いてください（必要に応じて `--maps_extra_args -- --base_size ...` のようにセパレータを挟んでも構いません）。`datagen_maps.py` を指定した場合はモジュールとして読み込まれるため、デモ処理を避けつつ `make_MAPS_shape(<mesh>, <output>, base_size, depth)` を直接呼び出します。別の MAPS 生成スクリプトを使う場合は、`--maps_script python` として `--maps_extra_args` にそのスクリプトへのパスやフラグを付ける従来の呼び方も維持されています。
+`--maps_script` を省略した場合は `../SubdivNet/datagen_maps.py` を自動的に探します（見つからない場合はエラーになります）。`--maps_extra_args` は MAPS に渡す追加オプションを受け取るリマインダ引数で、コマンドの一番最後に置いてください（例: `--maps_extra_args --base_size 96 --depth 3`）。`--maps_script` には Python 実行ファイルではなく `datagen_maps.py` のパスを指定し、スクリプト本体は必ず subprocess 経由で起動されます。
 
 処理後は `datasets/fossils_maps/` 以下に元ディレクトリ構造を保ったまま保存され、面数やスケール、MAPS 有無を記録した JSON マニフェストが出力されます。
 

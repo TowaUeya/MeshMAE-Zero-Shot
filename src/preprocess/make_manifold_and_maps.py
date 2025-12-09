@@ -9,7 +9,7 @@ The script performs the following steps for each mesh inside the input directory
 
 The MAPS generation is intentionally kept external. MeshMAE-compatible MAPS can be
 produced with the official SubdivNet `datagen_maps.py` script. When `--make-maps` is
-set, provide `--maps-script` pointing to the SubdivNet executable (the script is
+set, provide `--maps-script` pointing to the SubdivNet script path (the script is
 auto-detected from a sibling `../SubdivNet/datagen_maps.py` when available). Any
 additional arguments for the MAPS script can be passed via `--maps-extra-args`.
 """
@@ -17,10 +17,10 @@ additional arguments for the MAPS script can be passed via `--maps-extra-args`.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import logging
 import subprocess
+import sys
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
@@ -133,59 +133,38 @@ def repair_mesh(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
 
 
 def run_maps_generation(script: Path, mesh_path: Path, output_dir: Path, extra_args: List[str]) -> bool:
-    def _parse_maps_shape_args(args: List[str]) -> tuple[int, int]:
-        parser = argparse.ArgumentParser(add_help=False)
-        parser.add_argument("--base_size", type=int, default=96)
-        parser.add_argument("--depth", type=int, default=3)
-        known, _ = parser.parse_known_args(args)
-        return known.base_size, known.depth
+    def _tail(text: str, limit: int = 40) -> str:
+        lines = text.splitlines()
+        if len(lines) > limit:
+            lines = lines[-limit:]
+        return "\n".join(lines)
 
-    def _run_via_import(module_path: Path) -> bool:
-        base_size, depth = _parse_maps_shape_args(extra_args)
-        output_file = output_dir / f"{mesh_path.stem}_maps{mesh_path.suffix}"
-
-        spec = importlib.util.spec_from_file_location("maps_module", module_path)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"Could not load module from {module_path}")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-
-        if not hasattr(module, "make_MAPS_shape"):
-            raise AttributeError("datagen_maps.py does not expose make_MAPS_shape")
-
-        logging.info(
-            "Running MAPS via make_MAPS_shape from %s (base_size=%s, depth=%s)",
-            module_path,
-            base_size,
-            depth,
-        )
-        try:
-            module.make_MAPS_shape(str(mesh_path), str(output_file), base_size, depth)
-            return True
-        except Exception as exc:  # pragma: no cover - passthrough for subprocess fallback
-            logging.error("MAPS generation failed for %s: %s", mesh_path.name, exc)
-            return False
-
-    # Prefer importing SubdivNet's datagen_maps.py directly to avoid its default demo
-    # execution path (MAPS_demo1) when run as a script without arguments.
-    if script.name == "datagen_maps.py" and script.suffix == ".py":
-        return _run_via_import(script)
-
-    # Fallback: execute the script as an external process.
-    # Allow passing either the MAPS executable directly or a Python interpreter with the
-    # actual MAPS script in `extra_args`. Place `extra_args` before mesh/output so the
-    # invocation works for both styles:
-    #   - maps_script = datagen_maps.py, extra_args = []
-    #       => datagen_maps.py <mesh> <output>
-    #   - maps_script = python, extra_args = [datagen_maps.py]
-    #       => python datagen_maps.py <mesh> <output>
-    command = [str(script)] + list(extra_args) + [str(mesh_path), str(output_dir)]
+    output_file = output_dir / f"{mesh_path.stem}_maps{mesh_path.suffix}"
+    maps_dir = script.parent
+    command = [sys.executable, str(script), *extra_args, str(mesh_path), str(output_file)]
     logging.info("Running MAPS command: %s", " ".join(command))
-    completed = subprocess.run(command, check=False, capture_output=True, text=True)
+    completed = subprocess.run(
+        command,
+        cwd=maps_dir,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
     if completed.returncode != 0:
-        logging.error("MAPS generation failed for %s: %s", mesh_path.name, completed.stderr)
+        logging.error(
+            "MAPS generation failed for %s (return code %s).\nstdout:\n%s\nstderr:\n%s",
+            mesh_path.name,
+            completed.returncode,
+            _tail(completed.stdout),
+            _tail(completed.stderr),
+        )
         return False
-    logging.debug("MAPS generation stdout for %s: %s", mesh_path.name, completed.stdout)
+
+    if completed.stdout:
+        logging.debug("MAPS generation stdout for %s: %s", mesh_path.name, _tail(completed.stdout))
+    if completed.stderr:
+        logging.debug("MAPS generation stderr for %s: %s", mesh_path.name, _tail(completed.stderr))
     return True
 
 
@@ -245,8 +224,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         type=Path,
         default=None,
         help=(
-            "Path to the SubdivNet datagen_maps.py executable. When omitted, the script "
-            "tries ../SubdivNet/datagen_maps.py automatically."
+            "Path to the SubdivNet datagen_maps.py script (Python file). When omitted, "
+            "the script tries ../SubdivNet/datagen_maps.py automatically."
         ),
     )
     parser.add_argument(
@@ -306,6 +285,8 @@ def main() -> None:
                 )
         elif not maps_script.exists():
             raise FileNotFoundError(f"Provided MAPS script does not exist: {maps_script}")
+        if maps_script.suffix != ".py":
+            raise ValueError("--maps_script must point to a Python script such as datagen_maps.py")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     records: List[MeshProcessRecord] = []
