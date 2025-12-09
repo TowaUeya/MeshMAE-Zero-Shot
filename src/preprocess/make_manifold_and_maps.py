@@ -3,15 +3,15 @@
 The script performs the following steps for each mesh inside the input directory:
 1. Loads .ply/.stl meshes using `trimesh`.
 2. Repairs non-manifold artifacts (merging duplicate vertices, fixing normals).
-3. Simplifies the mesh to the requested number of faces (default 500).
-4. Saves the processed mesh into the output directory, keeping the folder structure.
-5. (Optional) launches an external MAPS generation script for hierarchical subdivision.
+3. Optionally generates MAPS using SubdivNet *before* simplification to avoid
+   topology changes that can break MAPS assumptions.
+4. Simplifies the mesh to the requested number of faces (default 500).
+5. Saves the processed mesh into the output directory, keeping the folder structure.
 
-The MAPS generation is intentionally kept external. MeshMAE-compatible MAPS can be
-produced with the official SubdivNet `datagen_maps.py` script. When `--make-maps` is
-set, provide `--maps-script` pointing to the SubdivNet script path (the script is
-auto-detected from a sibling `../SubdivNet/datagen_maps.py` when available). Any
-additional arguments for the MAPS script can be passed via `--maps-extra-args`.
+The MAPS generation is kept in a separate process via the
+`src.preprocess.run_subdivnet_maps` wrapper to avoid triggering SubdivNet's demo
+entrypoints. Pass `--subdivnet_root` to point at the SubdivNet repository and
+forward MAPS arguments through `--maps_extra_args`.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ import tempfile
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
 
 import numpy as np
 import trimesh
@@ -141,34 +141,70 @@ def repair_mesh(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     return mesh
 
 
-def run_maps_generation(script: Path, mesh_path: Path, output_dir: Path, extra_args: List[str]) -> bool:
+def _parse_maps_args(extra_args: List[str]) -> Tuple[int, int, Optional[int], List[str]]:
+    """Extract MAPS parameters while preserving passthrough flags."""
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--base_size", type=int, default=96)
+    parser.add_argument("--depth", type=int, default=3)
+    parser.add_argument("--max_base_size", type=int, default=None)
+    parser.add_argument("--verbose", action="store_true")
+
+    known, unknown = parser.parse_known_args(extra_args)
+    passthrough = []
+    for token in unknown:
+        if token == "--":
+            continue
+        passthrough.append(token)
+
+    return known.base_size, known.depth, known.max_base_size, (["--verbose"] if known.verbose else []) + passthrough
+
+
+def run_maps_generation(
+    subdivnet_root: Path,
+    mesh_path: Path,
+    output_dir: Path,
+    extra_args: List[str],
+    output_suffix: Optional[str] = None,
+) -> bool:
     def _tail(text: str, limit: int = 40) -> str:
         lines = text.splitlines()
         if len(lines) > limit:
             lines = lines[-limit:]
         return "\n".join(lines)
 
-    script = script.resolve()
+    subdivnet_root = subdivnet_root.resolve()
     mesh_path = mesh_path.resolve()
     output_dir = output_dir.resolve()
-    temp_dir = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.", dir=output_dir.parent))
-    output_file = temp_dir / f"{mesh_path.stem}_MAPS{mesh_path.suffix}"
+    output_file = output_dir / f"{mesh_path.stem}_MAPS{output_suffix or mesh_path.suffix}"
+
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    base_size, depth, max_base_size, passthrough = _parse_maps_args(extra_args)
     command = [
         sys.executable,
         "-m",
         "src.preprocess.run_subdivnet_maps",
         "--subdivnet_root",
-        str(script.parent),
+        str(subdivnet_root),
         "--input",
         str(mesh_path),
         "--out-dir",
-        str(temp_dir),
+        str(output_dir),
         "--output-path",
         str(output_file),
-        *extra_args,
+        "--base_size",
+        str(base_size),
+        "--depth",
+        str(depth),
     ]
+    if max_base_size is not None:
+        command.extend(["--max_base_size", str(max_base_size)])
+    command.extend(passthrough)
     env = os.environ.copy()
-    pythonpath_entries = [str(script.parent)]
+    pythonpath_entries = [str(subdivnet_root)]
     if env.get("PYTHONPATH"):
         pythonpath_entries.append(env["PYTHONPATH"])
     env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
@@ -208,18 +244,15 @@ def run_maps_generation(script: Path, mesh_path: Path, output_dir: Path, extra_a
             f.write("\n--- stderr ---\n")
             f.write(completed.stderr or "<empty>\n")
 
-        # Clean up temporary data and avoid leaving empty *_maps directories.
-        if temp_dir.exists():
-            shutil.rmtree(temp_dir)
+        # Clean up and avoid leaving empty *_maps directories.
+        if not any(output_dir.iterdir()):
+            shutil.rmtree(output_dir)
         return False
 
     if stdout_tail:
         logging.debug("MAPS generation stdout for %s: %s", mesh_path.name, stdout_tail)
     if stderr_tail:
         logging.debug("MAPS generation stderr for %s: %s", mesh_path.name, stderr_tail)
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-    shutil.move(str(temp_dir), str(output_dir))
     return True
 
 
@@ -229,31 +262,49 @@ def process_mesh(
     destination_root: Path,
     target_faces: int,
     generate_maps: bool,
-    maps_script: Optional[Path],
+    subdivnet_root: Optional[Path],
     maps_extra_args: List[str],
 ) -> MeshProcessRecord:
     logging.info("Processing %s", source_path)
     mesh = trimesh.load_mesh(source_path, process=False)
     original_faces = len(mesh.faces)
     mesh = repair_mesh(mesh)
+
+    maps_generated = False
+    notes = ""
+    if generate_maps:
+        if len(mesh.faces) == 0:
+            notes = "MAPS skipped: mesh has no faces after repair."
+        elif mesh.is_watertight is False:
+            notes = "MAPS skipped: mesh is not watertight after repair."
+        elif mesh.is_winding_consistent is False:
+            notes = "MAPS skipped: mesh has inconsistent winding after repair."
+        elif subdivnet_root is None:
+            notes = "--make_maps was requested but no SubdivNet root was provided."
+            logging.warning(notes)
+        else:
+            with tempfile.TemporaryDirectory(prefix=f".{source_path.stem}.") as temp_dir:
+                temp_repaired_path = Path(temp_dir) / f"{source_path.stem}_repaired{source_path.suffix or '.ply'}"
+                mesh.export(temp_repaired_path)
+                maps_output_dir = (destination_root / source_path.relative_to(source_root)).parent / f"{source_path.stem}_maps"
+                if maps_output_dir.exists():
+                    shutil.rmtree(maps_output_dir)
+                maps_generated = run_maps_generation(
+                    subdivnet_root,
+                    temp_repaired_path,
+                    maps_output_dir,
+                    maps_extra_args,
+                    output_suffix=source_path.suffix or ".ply",
+                )
+                if not maps_generated:
+                    notes = f"MAPS command failed; see {maps_output_dir / 'error.log'} for details."
+
     mesh = simplify_mesh(mesh, target_faces)
 
     relative_path = source_path.relative_to(source_root)
     destination_path = destination_root / relative_path
     destination_path.parent.mkdir(parents=True, exist_ok=True)
     mesh.export(destination_path)
-
-    maps_generated = False
-    notes = ""
-    if generate_maps:
-        if maps_script is None:
-            notes = "--make-maps was requested but no script was provided."
-            logging.warning(notes)
-        else:
-            maps_output_dir = destination_path.parent / f"{destination_path.stem}_maps"
-            maps_generated = run_maps_generation(maps_script, destination_path, maps_output_dir, maps_extra_args)
-            if not maps_generated:
-                notes = f"MAPS command failed; see {maps_output_dir / 'error.log'} for details."
 
     scale = float(np.linalg.norm(mesh.bounding_box.extents))
     return MeshProcessRecord(
@@ -274,12 +325,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--target_faces", type=int, default=500, help="Target number of faces after simplification")
     parser.add_argument("--make_maps", action="store_true", help="Run external MAPS generation tool")
     parser.add_argument(
-        "--maps_script",
+        "--subdivnet_root",
         type=Path,
         default=None,
         help=(
-            "Path to the SubdivNet datagen_maps.py script (Python file). When omitted, "
-            "the script tries ../SubdivNet/datagen_maps.py automatically."
+            "Path to the SubdivNet repository root. When omitted, ../SubdivNet is "
+            "auto-detected if present."
         ),
     )
     parser.add_argument(
@@ -328,7 +379,7 @@ def main() -> None:
     output_dir: Path = args.output_dir
     target_faces: int = args.target_faces
     generate_maps: bool = args.make_maps
-    maps_script: Optional[Path] = args.maps_script
+    subdivnet_root: Optional[Path] = args.subdivnet_root
     maps_extra_args: List[str] = [arg for arg in args.maps_extra_args if arg != "--"]
     num_workers: int = max(args.num_workers, 0)
 
@@ -336,21 +387,19 @@ def main() -> None:
         raise FileNotFoundError(f"Input directory does not exist: {input_dir}")
 
     if generate_maps:
-        if maps_script is None:
-            candidate = Path(__file__).resolve().parents[2] / "SubdivNet" / "datagen_maps.py"
-            if candidate.exists():
-                maps_script = candidate
-                logging.info("Auto-detected SubdivNet MAPS script at %s", candidate)
+        if subdivnet_root is None:
+            candidate = Path(__file__).resolve().parents[2] / "SubdivNet"
+            if (candidate / "datagen_maps.py").exists():
+                subdivnet_root = candidate
+                logging.info("Auto-detected SubdivNet repository at %s", candidate)
             else:
                 raise FileNotFoundError(
-                    "MAPS generation requested but no --maps_script was provided and "
-                    "../SubdivNet/datagen_maps.py was not found. Clone https://github.com/"
-                    "lzhengning/SubdivNet next to this repository or pass --maps_script."
+                    "MAPS generation requested but no --subdivnet_root was provided and "
+                    "../SubdivNet was not found. Clone https://github.com/lzhengning/SubdivNet "
+                    "next to this repository or pass --subdivnet_root."
                 )
-        elif not maps_script.exists():
-            raise FileNotFoundError(f"Provided MAPS script does not exist: {maps_script}")
-        if maps_script.suffix != ".py":
-            raise ValueError("--maps_script must point to a Python script such as datagen_maps.py")
+        elif not subdivnet_root.exists():
+            raise FileNotFoundError(f"Provided SubdivNet root does not exist: {subdivnet_root}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     records: List[MeshProcessRecord] = []
@@ -368,7 +417,7 @@ def main() -> None:
                         output_dir,
                         target_faces,
                         generate_maps,
-                        maps_script,
+                        subdivnet_root,
                         maps_extra_args,
                     )
                     for mesh_file in mesh_files
@@ -383,7 +432,7 @@ def main() -> None:
                 output_dir,
                 target_faces,
                 generate_maps,
-                maps_script,
+                subdivnet_root,
                 maps_extra_args,
             )
             records.append(record)

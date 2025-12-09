@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import sys
+import traceback
 from pathlib import Path
 from typing import Optional
 
@@ -130,6 +131,11 @@ def run_maps(
             return output_path
         except Exception as exc:  # pragma: no cover - SubdivNet failures are external
             last_error = exc
+            print(
+                f"MAPS failed for base_size={candidate_size} on {input_path}: {exc}",
+                file=sys.stderr,
+            )
+            traceback.print_exc()
             continue
 
     raise RuntimeError(
