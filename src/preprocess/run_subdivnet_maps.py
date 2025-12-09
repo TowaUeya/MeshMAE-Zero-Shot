@@ -83,14 +83,51 @@ def run_maps(
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
     mesh = trimesh.load_mesh(input_path, process=False)
-    maps = maps_cls(mesh.vertices, mesh.faces, base_size=base_size, verbose=verbose)
-    if max_base_size is not None and getattr(maps, "base_size", base_size) > max_base_size:
-        raise ValueError(
-            f"Computed base_size {getattr(maps, 'base_size', base_size)} exceeds max_base_size {max_base_size}"
-        )
-    sub_mesh = maps.mesh_upsampling(depth=depth)
-    sub_mesh.export(output_path)
-    return output_path
+    face_count = len(mesh.faces)
+    if face_count == 0:
+        raise ValueError(f"Mesh {input_path} has no faces; cannot generate MAPS")
+
+    attempted_sizes: list[int] = []
+    last_error: Optional[Exception] = None
+
+    def _candidate_base_sizes() -> list[int]:
+        sizes: list[int] = []
+        size = max(min(base_size, face_count), 4)
+        while size not in sizes:
+            sizes.append(size)
+            if size <= 8:
+                break
+            next_size = size // 2
+            if next_size < 4:
+                break
+            size = next_size
+        return sizes
+
+    for candidate_size in _candidate_base_sizes():
+        attempted_sizes.append(candidate_size)
+        try:
+            maps = maps_cls(
+                mesh.vertices,
+                mesh.faces,
+                base_size=candidate_size,
+                verbose=verbose,
+            )
+            actual_base_size = getattr(maps, "base_size", candidate_size)
+            if max_base_size is not None and actual_base_size > max_base_size:
+                raise ValueError(
+                    f"Computed base_size {actual_base_size} exceeds max_base_size {max_base_size}"
+                )
+            sub_mesh = maps.mesh_upsampling(depth=depth)
+            sub_mesh.export(output_path)
+            return output_path
+        except Exception as exc:  # pragma: no cover - SubdivNet failures are external
+            last_error = exc
+            continue
+
+    raise RuntimeError(
+        "MAPS generation failed after trying base_size candidates "
+        f"{attempted_sizes} for {input_path}"
+    ) from last_error
 
 
 def main(argv: Optional[list[str]] = None) -> None:
