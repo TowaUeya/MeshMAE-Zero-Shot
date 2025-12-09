@@ -81,7 +81,7 @@ pip install -r env/requirements.txt
 ## ステップ別手順
 
 ### 1. メッシュ前処理
- MeshMAE の実験は多様体メッシュで約500面、MAPS 階層が整備されていることを前提としています。本リポジトリのラッパースクリプトから公式ツールチェーンを呼び出し、必要な加工を自動化します。`--make_maps` を指定した場合は、公式 SubdivNet リポジトリの `datagen_maps.py` をそのまま `--maps_script` に渡してください（隣接フォルダに `../SubdivNet/datagen_maps.py` がある場合は自動検出されます）。
+ MeshMAE の実験は多様体メッシュで約500面、MAPS 階層が整備されていることを前提としています。本リポジトリのラッパースクリプトから公式ツールチェーンを呼び出し、必要な加工を自動化します。`--make_maps` を指定した場合は、公式 SubdivNet リポジトリの `datagen_maps.py` をそのまま `--maps_script` に渡してください（隣接フォルダに `../SubdivNet/datagen_maps.py` がある場合は自動検出されます）。`datagen_maps.py` をスクリプトとして実行すると内部のデモ関数 `MAPS_demo1()` が走ってしまうため、`make_manifold_and_maps.py` 側でモジュールとして読み込んで `make_MAPS_shape` だけを直接呼び出すようになっています。
 
 ```bash
 python -m src.preprocess.make_manifold_and_maps \
@@ -89,12 +89,12 @@ python -m src.preprocess.make_manifold_and_maps \
   --out datasets/fossils_maps \
   --target_faces 500 \
   --make_maps \
-  --maps_script "$(python -c 'import sys; print(sys.executable)')" \
-  --metadata datasets/fossils_maps/processing_metadata.json \
-  --maps_extra_args ../SubdivNet/datagen_maps.py -- --base_size 96 --depth 3 --max_base_size 192
+  --maps_script ../SubdivNet/datagen_maps.py \
+  --maps_extra_args --base_size 96 --depth 3 \
+  --metadata datasets/fossils_maps/processing_metadata.json
 ```
 
-`--maps_script` を省略した場合は `../SubdivNet/datagen_maps.py` を自動的に探します（見つからない場合はエラーになります）。`--maps_extra_args` は "以降すべて" をそのまま MAPS 側へ渡すリマインダ引数として扱われるため、このオプションはコマンドの一番最後に置いてください。スクリプトは `--maps_script` と `--maps_extra_args` の後ろにメッシュパス・出力先を付けた順序で呼び出されるため、`python ../SubdivNet/datagen_maps.py --base_size 96 --depth 3 <mesh> <out>` のように Python 経由でも直接実行でも同じ引数並びになります。
+`--maps_script` を省略した場合は `../SubdivNet/datagen_maps.py` を自動的に探します（見つからない場合はエラーになります）。`--maps_extra_args` は MAPS に渡す追加オプションを受け取るリマインダ引数で、コマンドの一番最後に置いてください（必要に応じて `--maps_extra_args -- --base_size ...` のようにセパレータを挟んでも構いません）。`datagen_maps.py` を指定した場合はモジュールとして読み込まれるため、デモ処理を避けつつ `make_MAPS_shape(<mesh>, <output>, base_size, depth)` を直接呼び出します。別の MAPS 生成スクリプトを使う場合は、`--maps_script python` として `--maps_extra_args` にそのスクリプトへのパスやフラグを付ける従来の呼び方も維持されています。
 
 処理後は `datasets/fossils_maps/` 以下に元ディレクトリ構造を保ったまま保存され、面数やスケール、MAPS 有無を記録した JSON マニフェストが出力されます。
 
