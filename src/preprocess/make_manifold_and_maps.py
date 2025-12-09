@@ -21,8 +21,10 @@ import json
 import logging
 import multiprocessing
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
@@ -66,6 +68,11 @@ def simplify_mesh(mesh: trimesh.Trimesh, target_faces: Optional[int]) -> trimesh
 
     current_faces = len(mesh.faces)
     if current_faces <= target_faces_int:
+        logging.debug(
+            "Skipping simplification: current_faces=%s is already <= target_faces=%s",
+            current_faces,
+            target_faces_int,
+        )
         return mesh
 
     if hasattr(mesh, "simplify_quadric_decimation"):
@@ -144,9 +151,22 @@ def run_maps_generation(script: Path, mesh_path: Path, output_dir: Path, extra_a
     script = script.resolve()
     mesh_path = mesh_path.resolve()
     output_dir = output_dir.resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_file = output_dir / f"{mesh_path.stem}_maps{mesh_path.suffix}"
-    command = [sys.executable, str(script), *extra_args, str(mesh_path), str(output_file)]
+    temp_dir = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.", dir=output_dir.parent))
+    output_file = temp_dir / f"{mesh_path.stem}_MAPS{mesh_path.suffix}"
+    command = [
+        sys.executable,
+        "-m",
+        "src.preprocess.run_subdivnet_maps",
+        "--subdivnet_root",
+        str(script.parent),
+        "--input",
+        str(mesh_path),
+        "--out-dir",
+        str(temp_dir),
+        "--output-path",
+        str(output_file),
+        *extra_args,
+    ]
     env = os.environ.copy()
     pythonpath_entries = [str(script.parent)]
     if env.get("PYTHONPATH"):
@@ -174,7 +194,11 @@ def run_maps_generation(script: Path, mesh_path: Path, output_dir: Path, extra_a
             stdout_tail,
             stderr_tail,
         )
-        error_log = output_dir / "error.log"
+        error_log_dir = output_dir
+        if error_log_dir.exists():
+            shutil.rmtree(error_log_dir)
+        error_log_dir.mkdir(parents=True, exist_ok=True)
+        error_log = error_log_dir / "error.log"
         with error_log.open("w", encoding="utf-8") as f:
             f.write("Command: " + " ".join(command) + "\n")
             f.write(f"Return code: {completed.returncode}\n")
@@ -184,17 +208,18 @@ def run_maps_generation(script: Path, mesh_path: Path, output_dir: Path, extra_a
             f.write("\n--- stderr ---\n")
             f.write(completed.stderr or "<empty>\n")
 
-        # Clean up empty directory trees if the maps directory truly has no content.
-        if output_dir.exists():
-            entries = list(output_dir.iterdir())
-            if not entries:
-                output_dir.rmdir()
+        # Clean up temporary data and avoid leaving empty *_maps directories.
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
         return False
 
     if stdout_tail:
         logging.debug("MAPS generation stdout for %s: %s", mesh_path.name, stdout_tail)
     if stderr_tail:
         logging.debug("MAPS generation stderr for %s: %s", mesh_path.name, stderr_tail)
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    shutil.move(str(temp_dir), str(output_dir))
     return True
 
 

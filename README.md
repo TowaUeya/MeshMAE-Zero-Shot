@@ -83,11 +83,18 @@ pip install -r env/requirements.txt
 ### 1. メッシュ前処理
 MeshMAE の実験は多様体メッシュで約500面、MAPS 階層が整備されていることを前提としています。本リポジトリのラッパースクリプトから公式ツールチェーンを呼び出し、必要な加工を自動化します。`--make_maps` を指定した場合は、公式 SubdivNet リポジトリの `datagen_maps.py` をそのまま `--maps_script` に渡してください（隣接フォルダに `../SubdivNet/datagen_maps.py` がある場合は自動検出されます）。
 
-MAPS 生成は常に subprocess で venv 側の Python (`sys.executable datagen_maps.py ...`) を起動します。`importlib` で直接読み込むと `from maps import MAPS` が失敗するため、スクリプト起動が必須です。カレントディレクトリは変更せず、代わりに SubdivNet 直下を `PYTHONPATH` に追加して相対 import を解決します。
+#### MAPS 生成の呼び出し方法（デモ実行を避ける）
+SubdivNet の `datagen_maps.py` はそのまま実行すると `if __name__ == "__main__": MAPS_demo1()` が走り、同梱デモ `airplane.obj` を探しに行きます。本リポジトリでは、デモを起動せずに `make_MAPS_shape` 相当の処理のみ呼び出すため、`src.preprocess.run_subdivnet_maps` という薄い CLI ラッパーを別プロセスで起動します。ラッパーは次の動作を行います。
 
-- 面数削減後のメッシュは `<out>/<stem>.<ext>` に保存されます。
-- MAPS 出力は `<out>/<stem>_maps/` 配下に `<stem>_maps<ext>` のような拡張子付きファイルとして生成されます（`<ext>` は入力メッシュに倣います）。`trimesh` の `export` は拡張子または `file_type` が必須で、拡張子なしパスを渡すと `ValueError('exporter not available')` となるため、必ず拡張子付きで渡しています。
-- MAPS 実行コマンドは INFO ログに出力され、成功/失敗に関わらず `<stem>_maps/` ディレクトリが作成されます。失敗時は `_maps/error.log` にコマンド・stdout・stderr が記録され、処理メタデータでは `maps_generated=false` になります。
+- `--subdivnet_root` で渡されたパスを `PYTHONPATH` に追加し、`datagen_maps` と `maps.MAPS` を import する（親プロセスに SubdivNet の依存を混ぜない）。
+- 入力メッシュと出力パスを「絶対パス」で受け取り、`base_size` / `depth` / `max_base_size` を使って MAPS を生成する。
+- 出力ファイルは拡張子付き（例: `<outdir>/<stem>_MAPS.obj`）で保存し、`trimesh.export` の exporter 解決エラーを防ぐ。
+
+`make_manifold_and_maps.py` 側は常にこのラッパーを subprocess で呼び出します。前処理中に SubdivNet 側の `__main__` ブロックが実行されることはなくなり、`cwd` もいじらないため、入力/出力を絶対パスで渡せばパス解決事故を防げます（旧実装は SubdivNet を `cwd` にして相対パスで呼んでいたため、別の場所に MAPS が出力され `_maps` が空のまま残るケースがありました）。
+
+- 面数削減後のメッシュは `<out>/<stem>.<ext>` に保存されます。500 面以下のメッシュは簡約処理をスキップします。
+- MAPS 出力は `<out>/<stem>_maps/` 配下に `<stem>_MAPS<ext>` が生成されます（`<ext>` は入力メッシュに倣います）。
+- MAPS が失敗した場合は空ディレクトリを残さず、`<stem>_maps/error.log` にコマンド・stdout・stderr が残ります。成功時のみ `_maps` ディレクトリが移動して確定します。
 
 ```bash
 python -m src.preprocess.make_manifold_and_maps \
@@ -98,10 +105,12 @@ python -m src.preprocess.make_manifold_and_maps \
   --make_maps \
   --maps_script ../SubdivNet/datagen_maps.py \
   --metadata datasets/fossils_maps/processing_metadata.json \
-  --maps_extra_args -- --base_size 96 --depth 3
+  --maps_extra_args -- --base_size 96 --depth 3 --max_base_size 192
 ```
 
-`--maps_script` を省略した場合は `../SubdivNet/datagen_maps.py` を自動的に探します（見つからない場合はエラーになります）。`--maps_extra_args` は MAPS に渡す追加オプションを受け取るリマインダ引数で、前処理スクリプト側のオプションをすべて記述した後に `--maps_extra_args -- --base_size 96 --depth 3` のように `--` を挟んで渡してください。`--maps_script` には Python 実行ファイルではなく `datagen_maps.py` のパスを指定し、スクリプト本体は必ず subprocess 経由で起動されます。
+`--maps_script` を省略した場合は `../SubdivNet/datagen_maps.py` を自動的に探します（見つからない場合はエラーになります）。`--maps_extra_args` で渡したいオプションは、すべて末尾に置くか、`--maps_extra_args -- --foo bar` のように区切ってください（`argparse.REMAINDER` で受け取るため）。SubdivNet の依存（`maps` パッケージが要求する `triangle`, `sortedcollections`, `networkx`, `rtree` など）は本リポジトリの `env/requirements.txt` には含まれていないため、必要に応じて SubdivNet 側の仮想環境にインストールしてください。
+
+
 
 前処理の並列化は `--num_workers` で制御します。0 または 1 を指定すると従来どおり逐次処理になり、2 以上でその数だけプロセスを立ててメッシュを並列処理します。I/O 帯域や MAPS 生成の外部スクリプトがボトルネックになる場合は、CPU コア数より少なめの値に絞ると安定します。
 
