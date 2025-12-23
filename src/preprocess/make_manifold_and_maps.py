@@ -47,6 +47,7 @@ class MeshProcessRecord:
     processed_faces: int
     scale: float
     maps_generated: bool
+    maps_output_path: Optional[str] = None
     notes: str = ""
 
 
@@ -269,8 +270,10 @@ def process_mesh(
     mesh = trimesh.load_mesh(source_path, process=False)
     original_faces = len(mesh.faces)
     mesh = repair_mesh(mesh)
+    relative_path = source_path.relative_to(source_root)
 
     maps_generated = False
+    maps_output_path: Optional[str] = None
     notes = ""
     if generate_maps:
         if len(mesh.faces) == 0:
@@ -286,7 +289,10 @@ def process_mesh(
             with tempfile.TemporaryDirectory(prefix=f".{source_path.stem}.") as temp_dir:
                 temp_repaired_path = Path(temp_dir) / f"{source_path.stem}_repaired{source_path.suffix or '.ply'}"
                 mesh.export(temp_repaired_path)
-                maps_output_dir = (destination_root / source_path.relative_to(source_root)).parent / f"{source_path.stem}_maps"
+                maps_relative_dir = relative_path.parent / f"{source_path.stem}_maps"
+                maps_output_dir = Path(temp_dir) / "maps_output"
+                success_maps_dir = destination_root / "success" / maps_relative_dir
+                failed_maps_dir = destination_root / "failed" / maps_relative_dir
                 if maps_output_dir.exists():
                     shutil.rmtree(maps_output_dir)
                 maps_generated = run_maps_generation(
@@ -296,12 +302,23 @@ def process_mesh(
                     maps_extra_args,
                     output_suffix=source_path.suffix or ".ply",
                 )
-                if not maps_generated:
-                    notes = f"MAPS command failed; see {maps_output_dir / 'error.log'} for details."
+                target_maps_dir = success_maps_dir if maps_generated else failed_maps_dir
+                target_maps_dir.parent.mkdir(parents=True, exist_ok=True)
+                if target_maps_dir.exists():
+                    shutil.rmtree(target_maps_dir)
+                if maps_output_dir.exists():
+                    shutil.move(str(maps_output_dir), target_maps_dir)
+                maps_output_path = str(target_maps_dir)
+                if maps_generated:
+                    notes = f"MAPS stored at {target_maps_dir}."
+                else:
+                    error_log_path = target_maps_dir / "error.log"
+                    if not error_log_path.exists():
+                        target_maps_dir.mkdir(parents=True, exist_ok=True)
+                    notes = f"MAPS command failed; see {error_log_path} for details."
 
     mesh = simplify_mesh(mesh, target_faces)
 
-    relative_path = source_path.relative_to(source_root)
     destination_path = destination_root / relative_path
     destination_path.parent.mkdir(parents=True, exist_ok=True)
     mesh.export(destination_path)
@@ -314,6 +331,7 @@ def process_mesh(
         processed_faces=len(mesh.faces),
         scale=scale,
         maps_generated=maps_generated,
+        maps_output_path=maps_output_path,
         notes=notes,
     )
 

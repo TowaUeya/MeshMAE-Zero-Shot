@@ -93,7 +93,7 @@ SubdivNet の `datagen_maps.py` には `if __name__ == "__main__": MAPS_demo1()`
 `make_manifold_and_maps.py` 側は常にこのラッパーを subprocess で呼び出します。前処理中に SubdivNet 側の `__main__` ブロックが実行されることはなくなり、入力/出力を絶対パスで渡すことでパス解決事故を防ぎます。
 
 - 簡略化後のメッシュは `<out>/<stem>.<ext>` に保存されます。500 面以下のメッシュは簡約処理をスキップします。
-- MAPS 出力は `<out>/<stem>_maps/` 配下に `<stem>_MAPS.<ext>` が生成されます。失敗した場合は空ディレクトリを残さず、必ず `<stem>_maps/error.log` が作成されます。
+- MAPS 出力は `<out>/success/<relative>/<stem>_maps/` に `<stem>_MAPS.<ext>` が生成されます。`<relative>` は入力ルートからの相対パスで、元のフォルダ構造を保ったまま保存されます。失敗した場合はログが `<out>/failed/<relative>/<stem>_maps/error.log` に移動されるため、成功・失敗をディレクトリで分離したうえでトレースを確認できます。
 
 ```bash
 python -m src.preprocess.make_manifold_and_maps \
@@ -112,7 +112,8 @@ python -m src.preprocess.make_manifold_and_maps \
 出力物の意味:
 
 - `<mesh>.<ext>`: 多様体化 + 簡略化後（target_faces=500）のメッシュ。
-- `<mesh>_maps/`: MAPS 生成結果。成功時は `<mesh>_MAPS.<ext>` を必ず含み、失敗時は `error.log` にコマンドと traceback が残ります。
+- `success/<relative>/<mesh>_maps/`: MAPS 生成結果。成功時は `<mesh>_MAPS.<ext>` を必ず含みます。
+- `failed/<relative>/<mesh>_maps/error.log`: MAPS 生成失敗時のログ。`<relative>` は入力ルートからの相対パスで、成功時と同じ階層構造を維持します。
 
 MAPS 生成で遭遇しやすいトラブルと回避策:
 
@@ -142,7 +143,7 @@ python -m src.preprocess.make_manifold_and_maps \
   --num_workers 4
 ```
 
-処理後は `datasets/fossils_maps/` 以下に元ディレクトリ構造を保ったまま保存され、面数やスケール、MAPS 有無を記録した JSON マニフェストが出力されます。
+処理後は `datasets/fossils_maps/` 以下に元ディレクトリ構造を保ったまま保存され、面数やスケール、MAPS 有無、MAPS の格納先（成功/失敗のディレクトリを含む）を記録した JSON マニフェストが出力されます。
 
 #### 二次デシメーションに必要なライブラリが入っているか確認する
 
@@ -200,7 +201,7 @@ python -m pip install -e ../SubdivNet  # maps モジュールを Python から�
 
 > **Troubleshooting – MAPS ディレクトリが空に見える場合**
 >
-> 以前の実装では SubdivNet をカレントディレクトリにしたまま相対パスの入力/出力を渡していたため、MAPS の出力が別場所へ書き出され、`<stem>_maps/` が空のまま残る不具合がありました。現在は入力メッシュと出力先を絶対パスで渡し、`PYTHONPATH` に SubdivNet を追加することで、期待したフォルダに MAPS ファイルが生成されます。失敗時は `_maps/error.log` を確認してください。
+> 以前の実装では SubdivNet をカレントディレクトリにしたまま相対パスの入力/出力を渡していたため、MAPS の出力が別場所へ書き出され、`<stem>_maps/` が空のまま残る不具合がありました。現在は入力メッシュと出力先を絶対パスで渡し、`PYTHONPATH` に SubdivNet を追加することで、期待したフォルダに MAPS ファイルが生成されます。失敗時は `failed/<relative>/<stem>_maps/error.log` を確認してください。
 
 生成された MAPS 出力フォルダを本リポジトリ直下に作成した `datasets/` 配下へ配置し、MeshMAE 実行時には `--dataroot` でそのフォルダを指します（例: `--dataroot ./datasets/Manifold40-MAPS-96-3/`）。
 
