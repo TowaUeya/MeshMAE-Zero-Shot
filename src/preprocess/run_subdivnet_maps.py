@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import sys
 import traceback
 from pathlib import Path
@@ -58,6 +59,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--depth", type=int, default=3, help="Subdivision depth")
     parser.add_argument("--max_base_size", type=int, default=None, help="Abort if computed base_size exceeds this value")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose MAPS logging")
+    parser.add_argument(
+        "--metadata",
+        type=Path,
+        default=None,
+        help="Optional path to write MAPS run metadata as JSON",
+    )
     return parser.parse_args(argv)
 
 
@@ -70,6 +77,7 @@ def run_maps(
     depth: int,
     max_base_size: Optional[int],
     verbose: bool,
+    metadata: Optional[Path] = None,
 ) -> Path:
     datagen_maps, maps_cls = resolve_subdivnet(subdivnet_root)
 
@@ -82,6 +90,15 @@ def run_maps(
     else:
         output_path = output_path.resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    metadata_payload = {
+        "attempted_base_sizes": [],
+        "chosen_base_size": None,
+        "actual_base_size": None,
+        "success": False,
+        "output_path": str(output_path),
+        "error": None,
+    }
 
     mesh = trimesh.load_mesh(input_path, process=False)
     face_count = len(mesh.faces)
@@ -112,8 +129,17 @@ def run_maps(
 
         return sizes
 
+    def _write_metadata():
+        if metadata is None:
+            return
+        metadata_path = metadata.resolve()
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        with metadata_path.open("w", encoding="utf-8") as handle:
+            json.dump(metadata_payload, handle, indent=2)
+
     for candidate_size in _candidate_base_sizes():
         attempted_sizes.append(candidate_size)
+        metadata_payload["attempted_base_sizes"] = attempted_sizes.copy()
         try:
             maps = maps_cls(
                 mesh.vertices,
@@ -128,9 +154,15 @@ def run_maps(
                 )
             sub_mesh = maps.mesh_upsampling(depth=depth)
             sub_mesh.export(output_path)
+            metadata_payload["chosen_base_size"] = candidate_size
+            metadata_payload["actual_base_size"] = actual_base_size
+            metadata_payload["success"] = True
+            metadata_payload["error"] = None
+            _write_metadata()
             return output_path
         except Exception as exc:  # pragma: no cover - SubdivNet failures are external
             last_error = exc
+            metadata_payload["error"] = str(exc)
             print(
                 f"MAPS failed for base_size={candidate_size} on {input_path}: {exc}",
                 file=sys.stderr,
@@ -138,6 +170,8 @@ def run_maps(
             traceback.print_exc()
             continue
 
+    metadata_payload["error"] = str(last_error) if last_error is not None else "Unknown MAPS failure"
+    _write_metadata()
     raise RuntimeError(
         "MAPS generation failed after trying base_size candidates "
         f"{attempted_sizes} for {input_path}"
@@ -155,6 +189,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         depth=args.depth,
         max_base_size=args.max_base_size,
         verbose=args.verbose,
+        metadata=args.metadata,
     )
 
 
