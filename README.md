@@ -227,6 +227,48 @@ python -m pip install -e ../SubdivNet  # maps モジュールを Python から�
 ### 3. 特徴量抽出
 化石向け自己教師あり学習を行った後、またはベースモデルのみで構わない場合でも、前処理済みメッシュを固定長ベクトルへ変換します。
 
+#### 継続SSLなしで公式ベースモデルだけを使って特徴量抽出する手順
+化石データでの追加学習を行わず、公式 MeshMAE の事前学習済みベースモデル（例: `mae_vit_base_patch16` の `shapenet_pretrain.pkl`）をそのまま用いて埋め込みを得たい場合は、以下の手順で継続SSLステップをスキップできます。
+
+1. **前処理（必須）**  
+   継続SSLをしない場合でも、MeshMAE のエンコーダは **多様体メッシュかつ MAPS 付き** の入力を前提としています。必ず「1. メッシュ前処理」のフローを実施してください。最小限は次のように `make_manifold_and_maps.py` を実行し、`datasets/fossils_maps/`（任意の出力先で可）に MAPS 付きメッシュを用意します。
+   ```bash
+   python -m src.preprocess.make_manifold_and_maps \
+     --in datasets/fossils_raw \
+     --out datasets/fossils_maps \
+     --target_faces 500 \
+     --num_workers 0 \
+     --make_maps \
+     --subdivnet_root ../SubdivNet \
+     --maps_extra_args -- --base_size 96 --depth 3 --max_base_size 192
+   ```
+   MAPS を再利用できる配布データがある場合はこのステップを省略できますが、MeshMAE 用の MAPS 階層と約500面の多様体メッシュであることを確認してください。
+2. **公式実装を用意する**  
+   `MeshMAE` リポジトリをクローンして隣接ディレクトリに配置し、開発モードでインストールします。推論のみでも Python 側からモデル定義を参照できるようにする必要があります。
+   ```bash
+   git clone https://github.com/Maple728/MeshMAE.git ../MeshMAE
+   pip install -e ../MeshMAE
+   ```
+3. **公式チェックポイントを配置する**  
+   公式配布の事前学習済み重み（例: ShapeNet 事前学習の `shapenet_pretrain.pkl`）を `checkpoints/` に保存します。ダウンロード元が提供するファイル名と一致していればリネーム不要です。
+   ```bash
+   # 例: ダウンロード済みファイルを移動
+   mv /path/to/shapenet_pretrain.pkl checkpoints/shapenet_pretrain.pkl
+   ```
+4. **`configs/extract.yaml` をベースモデル用に調整する**  
+   - `input.checkpoint` を `./checkpoints/shapenet_pretrain.pkl` に変更する。  
+   - `input.dataroot` を前処理済みメッシュのルート（例: `datasets/fossils_maps`）に合わせる。  
+   - `encoder.pool_strategy`（`cls` または `mean`）や `encoder.normalize_embeddings` を必要に応じて設定する。
+5. **埋め込みを抽出する**  
+   継続SSLを行わないため追加の学習ジョブは不要です。以下のようにエンコーダのファクトリを公式実装から指定して抽出を実行します（CUDA が無い場合は `--device cpu` を指定）。
+   ```bash
+   python -m src.embed.extract_embeddings \
+     --config configs/extract.yaml \
+     --model-factory meshmae.models_mae.mae_vit_base_patch16 \
+     --normalize
+   ```
+   実行後、`embeddings/raw_embeddings.npy` と `embeddings/meta.csv`（パスは YAML の `output.*` で変更可）に特徴量とメタデータが保存されます。`run_target_pretrain.sh` などの継続SSLスクリプトは実行不要です。
+
 ```bash
 python -m src.embed.extract_embeddings \
   --config configs/extract.yaml \
