@@ -45,9 +45,27 @@ class MeshProcessRecord:
     destination: str
     original_faces: int
     processed_faces: int
+    repaired_faces: int
+    repaired_vertices: int
+    repaired_is_watertight: bool
+    repaired_is_winding_consistent: bool
+    repaired_non_manifold_edges: int
+    repair_mode: str
     scale: float
     maps_generated: bool
     maps_output_path: Optional[str] = None
+    notes: str = ""
+
+
+@dataclass
+class RepairReport:
+    faces: int
+    vertices: int
+    is_watertight: bool
+    is_winding_consistent: bool
+    non_manifold_edges: int
+    mode: str
+    attempts: int
     notes: str = ""
 
 
@@ -105,41 +123,179 @@ def simplify_mesh(mesh: trimesh.Trimesh, target_faces: Optional[int]) -> trimesh
     return simplified
 
 
-def repair_mesh(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
-    """Run a tolerant set of repair ops across trimesh versions."""
+def _count_non_manifold_edges(mesh: trimesh.Trimesh) -> int:
+    if mesh.faces.size == 0:
+        return 0
+    faces = mesh.faces
+    edges = np.sort(
+        np.vstack(
+            [
+                faces[:, [0, 1]],
+                faces[:, [1, 2]],
+                faces[:, [2, 0]],
+            ]
+        ),
+        axis=1,
+    )
+    _, counts = np.unique(edges, axis=0, return_counts=True)
+    return int(np.sum(counts > 2))
 
-    # Newer trimesh versions dropped some instance helpers; prefer methods when
-    # available and fall back to trimesh.repair functions otherwise.
-    if hasattr(mesh, "remove_duplicate_faces"):
-        mesh.remove_duplicate_faces()
-    elif hasattr(trimesh.repair, "remove_duplicate_faces"):
-        trimesh.repair.remove_duplicate_faces(mesh)
 
-    if hasattr(mesh, "remove_unreferenced_vertices"):
-        mesh.remove_unreferenced_vertices()
-    elif hasattr(trimesh.repair, "remove_unreferenced_vertices"):
-        trimesh.repair.remove_unreferenced_vertices(mesh)
-
-    if hasattr(mesh, "remove_degenerate_faces"):
-        mesh.remove_degenerate_faces()
-    elif hasattr(trimesh.repair, "remove_degenerate_faces"):
-        trimesh.repair.remove_degenerate_faces(mesh)
-
+def _iterative_fill_holes(mesh: trimesh.Trimesh, max_iters: int = 1) -> None:
+    if max_iters <= 0:
+        return
     if hasattr(mesh, "fill_holes"):
-        mesh.fill_holes()
+        filler = mesh.fill_holes
     elif hasattr(trimesh.repair, "fill_holes"):
-        trimesh.repair.fill_holes(mesh)
+        filler = lambda: trimesh.repair.fill_holes(mesh)
+    else:
+        return
 
-    try:
-        mesh.process(validate=True)
-    except IndexError as exc:
-        # Some trimesh versions can raise IndexError inside fix_normals when
-        # winding repair encounters inconsistent adjacency. Retry with a less
-        # strict pass to keep processing moving.
-        logging.warning("trimesh.process(validate=True) failed (%s); retrying with validate=False", exc)
-        mesh.process(validate=False)
-    mesh.process(validate=True)
-    return mesh
+    previous_faces = len(mesh.faces)
+    for _ in range(max_iters):
+        try:
+            filler()
+        except Exception as exc:
+            logging.debug("fill_holes failed during repair: %s", exc)
+            break
+        current_faces = len(mesh.faces)
+        if current_faces == previous_faces:
+            break
+        previous_faces = current_faces
+
+
+def _append_error_log(log_dir: Path, lines: List[str]) -> Path:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    error_log = log_dir / "error.log"
+    timestamp = datetime.utcnow().isoformat()
+    with error_log.open("a", encoding="utf-8") as f:
+        for idx, line in enumerate(lines):
+            prefix = f"[{timestamp}] " if idx == 0 else " " * (len(timestamp) + 3)
+            f.write(prefix + line.rstrip() + "\n")
+        f.write("\n")
+    return error_log
+
+
+def _quality_snapshot(mesh: trimesh.Trimesh) -> dict:
+    return {
+        "faces": len(mesh.faces),
+        "vertices": len(mesh.vertices),
+        "is_watertight": bool(mesh.is_watertight),
+        "is_winding_consistent": bool(mesh.is_winding_consistent),
+        "non_manifold_edges": _count_non_manifold_edges(mesh),
+    }
+
+
+def repair_mesh(mesh: trimesh.Trimesh, aggressive: bool = False) -> Tuple[trimesh.Trimesh, RepairReport]:
+    """Run a tolerant set of repair ops across trimesh versions.
+
+    Parameters
+    ----------
+    mesh:
+        Input mesh to be repaired (mutated in-place).
+    aggressive:
+        Whether to immediately enable stronger cleanup. When False, a
+        lightweight pass is attempted first and escalated if quality checks
+        fail.
+    """
+
+    def _remove_duplicate_faces(target: trimesh.Trimesh) -> None:
+        if hasattr(target, "remove_duplicate_faces"):
+            target.remove_duplicate_faces()
+        elif hasattr(trimesh.repair, "remove_duplicate_faces"):
+            trimesh.repair.remove_duplicate_faces(target)
+
+    def _remove_unreferenced_vertices(target: trimesh.Trimesh) -> None:
+        if hasattr(target, "remove_unreferenced_vertices"):
+            target.remove_unreferenced_vertices()
+        elif hasattr(trimesh.repair, "remove_unreferenced_vertices"):
+            trimesh.repair.remove_unreferenced_vertices(target)
+
+    def _remove_degenerate_faces(target: trimesh.Trimesh) -> None:
+        if hasattr(target, "remove_degenerate_faces"):
+            target.remove_degenerate_faces()
+        elif hasattr(trimesh.repair, "remove_degenerate_faces"):
+            trimesh.repair.remove_degenerate_faces(target)
+
+    def _process_safe(target: trimesh.Trimesh) -> None:
+        try:
+            target.process(validate=True)
+        except IndexError as exc:
+            logging.warning(
+                "trimesh.process(validate=True) failed (%s); retrying with validate=False", exc
+            )
+            target.process(validate=False)
+        target.process(validate=True)
+
+    attempts = 0
+
+    def _run_pass(mode: str, aggressive_mode: bool) -> RepairReport:
+        nonlocal attempts, mesh
+        note_log: List[str] = []
+        attempts += 1
+        _remove_duplicate_faces(mesh)
+        _remove_degenerate_faces(mesh)
+        _remove_unreferenced_vertices(mesh)
+        _iterative_fill_holes(mesh, max_iters=3 if aggressive_mode else 1)
+
+        if aggressive_mode:
+            if hasattr(trimesh.repair, "fix_inversion"):
+                try:
+                    trimesh.repair.fix_inversion(mesh)
+                except Exception as exc:
+                    logging.debug("fix_inversion failed: %s", exc)
+            if hasattr(trimesh.repair, "fix_winding"):
+                try:
+                    trimesh.repair.fix_winding(mesh)
+                except Exception as exc:
+                    logging.debug("fix_winding failed: %s", exc)
+            if hasattr(trimesh.repair, "fix_normals"):
+                try:
+                    trimesh.repair.fix_normals(mesh)
+                except Exception as exc:
+                    logging.debug("fix_normals failed: %s", exc)
+
+            if mesh.is_watertight is False or mesh.is_winding_consistent is False:
+                try:
+                    components = mesh.split(only_watertight=False)
+                except Exception as exc:
+                    logging.debug("mesh.split failed during repair: %s", exc)
+                    components = []
+                if len(components) > 1:
+                    watertight_components = [c for c in components if c.is_watertight]
+                    selected = max(watertight_components or components, key=lambda c: len(c.faces))
+                    if selected is not mesh:
+                        note_log.append(
+                            f"Selected component with {len(selected.faces)} faces after split "
+                            f"(watertight={selected.is_watertight})."
+                        )
+                        mesh = selected
+                    _remove_unreferenced_vertices(mesh)
+
+        _process_safe(mesh)
+        quality = _quality_snapshot(mesh)
+        needs_extra_pass = aggressive_mode and (
+            not quality["is_watertight"]
+            or not quality["is_winding_consistent"]
+            or quality["non_manifold_edges"] > 0
+        )
+        if needs_extra_pass:
+            _iterative_fill_holes(mesh, max_iters=2 if aggressive_mode else 1)
+            _process_safe(mesh)
+            quality = _quality_snapshot(mesh)
+        return RepairReport(**quality, mode=mode, attempts=attempts, notes="\n".join(note_log))
+
+    initial_mode = "aggressive" if aggressive else "standard"
+    report = _run_pass(initial_mode, aggressive_mode=aggressive)
+    if (not report.is_watertight or not report.is_winding_consistent or report.non_manifold_edges > 0) and not aggressive:
+        logging.info(
+            "Initial repair left issues (watertight=%s, winding=%s, non_manifold_edges=%s); retrying with aggressive pass",
+            report.is_watertight,
+            report.is_winding_consistent,
+            report.non_manifold_edges,
+        )
+        report = _run_pass("aggressive_retry", aggressive_mode=True)
+    return mesh, report
 
 
 def _parse_maps_args(extra_args: List[str]) -> Tuple[int, int, Optional[int], List[str]]:
@@ -235,15 +391,19 @@ def run_maps_generation(
         if error_log_dir.exists():
             shutil.rmtree(error_log_dir)
         error_log_dir.mkdir(parents=True, exist_ok=True)
-        error_log = error_log_dir / "error.log"
-        with error_log.open("w", encoding="utf-8") as f:
-            f.write("Command: " + " ".join(command) + "\n")
-            f.write(f"Return code: {completed.returncode}\n")
-            f.write(f"Output path: {output_file}\n")
-            f.write("\n--- stdout ---\n")
-            f.write(completed.stdout or "<empty>\n")
-            f.write("\n--- stderr ---\n")
-            f.write(completed.stderr or "<empty>\n")
+        _append_error_log(
+            error_log_dir,
+            [
+                "MAPS command failed.",
+                "Command: " + " ".join(command),
+                f"Return code: {completed.returncode}",
+                f"Output path: {output_file}",
+                "--- stdout ---",
+                completed.stdout or "<empty>",
+                "--- stderr ---",
+                completed.stderr or "<empty>",
+            ],
+        )
 
         # Clean up and avoid leaving empty *_maps directories.
         if not any(output_dir.iterdir()):
@@ -265,34 +425,65 @@ def process_mesh(
     generate_maps: bool,
     subdivnet_root: Optional[Path],
     maps_extra_args: List[str],
+    aggressive_repair: bool,
 ) -> MeshProcessRecord:
     logging.info("Processing %s", source_path)
     mesh = trimesh.load_mesh(source_path, process=False)
     original_faces = len(mesh.faces)
-    mesh = repair_mesh(mesh)
+    mesh, repair_report = repair_mesh(mesh, aggressive=aggressive_repair)
     relative_path = source_path.relative_to(source_root)
 
     maps_generated = False
     maps_output_path: Optional[str] = None
-    notes = ""
+    notes_parts = [f"Repair mode={repair_report.mode}; attempts={repair_report.attempts}."]
+    repair_summary_lines = [
+        "Repair checkpoint before MAPS:",
+        f"- Faces after repair: {repair_report.faces}",
+        f"- Vertices after repair: {repair_report.vertices}",
+        f"- Watertight: {repair_report.is_watertight}",
+        f"- Winding consistent: {repair_report.is_winding_consistent}",
+        f"- Non-manifold edges: {repair_report.non_manifold_edges}",
+    ]
+    if repair_report.notes:
+        repair_summary_lines.append("Repair notes: " + repair_report.notes.replace("\n", "; "))
+
     if generate_maps:
+        maps_relative_dir = relative_path.parent / f"{source_path.stem}_maps"
+        success_maps_dir = destination_root / "success" / maps_relative_dir
+        failed_maps_dir = destination_root / "failed" / maps_relative_dir
+        maps_failure_reasons: List[str] = []
         if len(mesh.faces) == 0:
-            notes = "MAPS skipped: mesh has no faces after repair."
-        elif mesh.is_watertight is False:
-            notes = "MAPS skipped: mesh is not watertight after repair."
-        elif mesh.is_winding_consistent is False:
-            notes = "MAPS skipped: mesh has inconsistent winding after repair."
+            maps_failure_reasons.append("MAPS skipped: mesh has no faces after repair.")
+        if repair_report.is_watertight is False:
+            maps_failure_reasons.append("MAPS skipped: mesh is not watertight after repair.")
+        if repair_report.is_winding_consistent is False:
+            maps_failure_reasons.append("MAPS skipped: mesh has inconsistent winding after repair.")
+        if repair_report.non_manifold_edges > 0:
+            maps_failure_reasons.append(
+                f"MAPS skipped: {repair_report.non_manifold_edges} non-manifold edges remain after repair."
+            )
+
+        if maps_failure_reasons:
+            target_maps_dir = failed_maps_dir
+            if target_maps_dir.exists():
+                shutil.rmtree(target_maps_dir)
+            _append_error_log(target_maps_dir, maps_failure_reasons + repair_summary_lines)
+            maps_output_path = str(target_maps_dir)
+            notes_parts.extend(maps_failure_reasons)
+            maps_generated = False
         elif subdivnet_root is None:
-            notes = "--make_maps was requested but no SubdivNet root was provided."
-            logging.warning(notes)
-        else:
+            warning_note = "--make_maps was requested but no SubdivNet root was provided."
+            logging.warning(warning_note)
+            notes_parts.append(warning_note)
+        elif not maps_failure_reasons and subdivnet_root is not None:
+            if failed_maps_dir.exists():
+                shutil.rmtree(failed_maps_dir)
+            if success_maps_dir.exists():
+                shutil.rmtree(success_maps_dir)
             with tempfile.TemporaryDirectory(prefix=f".{source_path.stem}.") as temp_dir:
                 temp_repaired_path = Path(temp_dir) / f"{source_path.stem}_repaired{source_path.suffix or '.ply'}"
                 mesh.export(temp_repaired_path)
-                maps_relative_dir = relative_path.parent / f"{source_path.stem}_maps"
                 maps_output_dir = Path(temp_dir) / "maps_output"
-                success_maps_dir = destination_root / "success" / maps_relative_dir
-                failed_maps_dir = destination_root / "failed" / maps_relative_dir
                 if maps_output_dir.exists():
                     shutil.rmtree(maps_output_dir)
                 maps_generated = run_maps_generation(
@@ -310,12 +501,12 @@ def process_mesh(
                     shutil.move(str(maps_output_dir), target_maps_dir)
                 maps_output_path = str(target_maps_dir)
                 if maps_generated:
-                    notes = f"MAPS stored at {target_maps_dir}."
+                    notes_parts.append(f"MAPS stored at {target_maps_dir}.")
                 else:
+                    _append_error_log(target_maps_dir, ["MAPS command failed."] + repair_summary_lines)
                     error_log_path = target_maps_dir / "error.log"
-                    if not error_log_path.exists():
-                        target_maps_dir.mkdir(parents=True, exist_ok=True)
-                    notes = f"MAPS command failed; see {error_log_path} for details."
+                    notes_parts.append(f"MAPS command failed; see {error_log_path} for details.")
+    notes = "; ".join(notes_parts)
 
     mesh = simplify_mesh(mesh, target_faces)
 
@@ -329,6 +520,12 @@ def process_mesh(
         destination=str(destination_path),
         original_faces=original_faces,
         processed_faces=len(mesh.faces),
+        repaired_faces=repair_report.faces,
+        repaired_vertices=repair_report.vertices,
+        repaired_is_watertight=repair_report.is_watertight,
+        repaired_is_winding_consistent=repair_report.is_winding_consistent,
+        repaired_non_manifold_edges=repair_report.non_manifold_edges,
+        repair_mode=repair_report.mode,
         scale=scale,
         maps_generated=maps_generated,
         maps_output_path=maps_output_path,
@@ -370,6 +567,15 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
             "Use 0 or 1 to run sequentially; values >1 enable parallel processing."
         ),
     )
+    parser.add_argument(
+        "--aggressive-repair",
+        action="store_true",
+        help=(
+            "Enable stronger mesh repair (multiple hole-filling passes, inversion/winding fixes, "
+            "component splitting). Recommended when MAPS generation fails due to self-intersections "
+            "or non-manifold edges."
+        ),
+    )
     parser.add_argument("--metadata", type=Path, default=None, help="Optional path to save processing metadata JSON")
     parser.add_argument("--log_level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
 
@@ -400,6 +606,7 @@ def main() -> None:
     subdivnet_root: Optional[Path] = args.subdivnet_root
     maps_extra_args: List[str] = [arg for arg in args.maps_extra_args if arg != "--"]
     num_workers: int = max(args.num_workers, 0)
+    aggressive_repair: bool = args.aggressive_repair
 
     if not input_dir.exists():
         raise FileNotFoundError(f"Input directory does not exist: {input_dir}")
@@ -437,6 +644,7 @@ def main() -> None:
                         generate_maps,
                         subdivnet_root,
                         maps_extra_args,
+                        aggressive_repair,
                     )
                     for mesh_file in mesh_files
                 ],
@@ -452,6 +660,7 @@ def main() -> None:
                 generate_maps,
                 subdivnet_root,
                 maps_extra_args,
+                aggressive_repair,
             )
             records.append(record)
 
