@@ -206,24 +206,30 @@ python -m pip install -e ../SubdivNet  # maps モジュールを Python から�
     --input input_repaired.obj \
     --out-dir output_maps_dir \
     --output-path output_maps_dir/input_repaired_MAPS.obj \
-    --metadata output_maps_dir/run_metadata.json \
+    --metadata output_maps_dir/run_metadata.json \ # オプション（推奨）
     --base_size 96 --depth 3 --max_base_size 192
   ```
 
    `base_size=96`, `depth=3`, `max_base_size=192` は化石データ向けの保守的な推奨値です。`make_manifold_and_maps.py` から呼ぶ場合は前述の例のように `--maps_extra_args` へ同じオプションを渡します。
 
+   MAPS に渡す前にメッシュをクレンジングしたい場合は、`--clean-input` と `--clean-min-face-area 1e-9` のようなしきい値を追加すると、重複頂点/面の除去・ゼロ/極小面削除・法線再計算を行った上で、一時的にクリーンなメッシュを `out-dir` 配下へ書き出します（失敗時はそのクリーンメッシュのパスがメタデータに残ります）。
+
    `--metadata` を指定すると、以下の情報を JSON で保存します（親ディレクトリが無ければ自動作成されます）。
 
+   - `input_faces` / `input_vertices`: 受け取った入力メッシュの面数・頂点数
    - `attempted_base_sizes`: 試行した base_size のリスト（降順）
    - `chosen_base_size`: 実際に採用した base_size（失敗時は `null`）
    - `actual_base_size`: MAPS 実装が報告した base_size（`maps.MAPS.base_size` を優先）
    - `success`: 成否フラグ
-   - `output_path`: 出力メッシュの絶対パス
+   - `output_path`: 出力メッシュの絶対パス（`output_path_relative` はフォルダ内の相対パス）
+   - `cleaning`: `--clean-input` 指定時のクレンジング結果（削除した重複頂点/面数、ゼロ/極小面数、面・頂点数の推移、min_face_area）
+   - `cleaned_input_path`: クリーン済みメッシュの絶対パス（`cleaned_input_relative` はフォルダ内の相対パス）
+   - `failed_mesh_path`: MAPS 失敗時に保存した入力メッシュのパス（クリーン済みがあればそのコピーを指します）
    - `error`: 失敗時のエラーメッセージ
 
 2. **データセット全体をまとめて処理する場合**
 
-   `make_manifold_and_maps.py` に `--make_maps` を付けて実行してください（上記の例）。SubdivNet オリジナルの `--config FOSSILS` などを使う場合も、demo が走らないように `run_subdivnet_maps` へパラメータを渡す形を推奨します。
+   `make_manifold_and_maps.py` に `--make_maps` を付けて実行してください（上記の例）。SubdivNet オリジナルの `--config FOSSILS` などを使う場合も、demo が走らないように `run_subdivnet_maps` へパラメータを渡す形を推奨します。MAPS 前にクレンジングしたい場合は `--clean_maps_input --clean_maps_min_face_area 1e-9` を併用すると、修復後メッシュから重複頂点/面や極小面を除去したクリーン版を MAPS に渡し、成功・失敗フォルダ内に残します。
 
 配布済み MAPS データをそのまま使うだけなら、生成処理を回す必要はありません。
 

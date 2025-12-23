@@ -75,11 +75,17 @@ def test_run_maps_writes_metadata_on_success(tmp_path, monkeypatch):
     )
 
     metadata = json.loads(metadata_path.read_text())
+    assert metadata["input_faces"] == 6
+    assert metadata["input_vertices"] == 3
     assert metadata["attempted_base_sizes"] == [6]
     assert metadata["chosen_base_size"] == 6
     assert metadata["actual_base_size"] == 7
     assert metadata["success"] is True
     assert metadata["output_path"] == str(result_path)
+    assert metadata["output_path_relative"] == Path(metadata["output_path"]).name
+    assert metadata["cleaning"] is None
+    assert metadata["cleaned_input_path"] is None
+    assert metadata["failed_mesh_path"] is None
     assert metadata["error"] is None
     assert result_path.read_text() == "upsampled"
 
@@ -105,8 +111,8 @@ def test_run_maps_writes_metadata_on_failure(tmp_path, monkeypatch):
             depth=2,
             max_base_size=None,
             verbose=False,
-            metadata=metadata_path,
-        )
+        metadata=metadata_path,
+    )
 
     metadata = json.loads(metadata_path.read_text())
     assert metadata["attempted_base_sizes"] == [5, 4]
@@ -114,4 +120,52 @@ def test_run_maps_writes_metadata_on_failure(tmp_path, monkeypatch):
     assert metadata["actual_base_size"] is None
     assert metadata["success"] is False
     assert metadata["output_path"] == str((output_dir / "mesh_MAPS.obj").resolve())
+    assert metadata["failed_mesh_path"] == str(input_path.resolve())
+    assert metadata["failed_mesh_relative"] == input_path.name
     assert "maps init failed" in metadata["error"]
+
+
+def test_run_maps_cleans_mesh_and_records_metadata(tmp_path, monkeypatch):
+    metadata_path = tmp_path / "meta.json"
+    output_dir = tmp_path / "out"
+    input_path = tmp_path / "mesh.obj"
+    vertices = [
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 0.0, 0.0),
+    ]
+    faces = [
+        (0, 1, 2),
+        (0, 1, 2),  # duplicate
+        (0, 3, 2),  # zero-area because 0 == 3
+    ]
+    real_mesh = run_subdivnet_maps.trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+    input_path.write_text("mesh")
+
+    monkeypatch.setattr(run_subdivnet_maps.trimesh, "load_mesh", lambda *args, **kwargs: real_mesh.copy())
+    monkeypatch.setattr(run_subdivnet_maps, "resolve_subdivnet", lambda root: (object(), SuccessfulMaps))
+
+    result_path = run_subdivnet_maps.run_maps(
+        subdivnet_root=tmp_path / "subdivnet",
+        input_path=input_path,
+        out_dir=output_dir,
+        output_path=None,
+        base_size=4,
+        depth=2,
+        max_base_size=None,
+        verbose=False,
+        metadata=metadata_path,
+        clean_input=True,
+        clean_min_face_area=1e-9,
+    )
+
+    metadata = json.loads(metadata_path.read_text())
+    assert metadata["cleaning"]["removed_duplicate_vertices"] == 1
+    assert metadata["cleaning"]["removed_duplicate_faces"] == 1
+    assert metadata["cleaning"]["removed_small_or_zero_faces"] == 1
+    assert metadata["cleaning"]["cleaned_faces"] == 1
+    assert metadata["cleaned_input_relative"] == f"{input_path.stem}_cleaned{input_path.suffix}"
+    cleaned_mesh_path = output_dir / metadata["cleaned_input_relative"]
+    assert cleaned_mesh_path.exists()
+    assert result_path.read_text() == "upsampled"
