@@ -53,6 +53,9 @@ class MeshProcessRecord:
     repair_mode: str
     scale: float
     maps_generated: bool
+    maps_metadata_path: Optional[str] = None
+    maps_cleaned_input_path: Optional[str] = None
+    maps_failed_mesh_path: Optional[str] = None
     maps_output_path: Optional[str] = None
     notes: str = ""
 
@@ -67,6 +70,13 @@ class RepairReport:
     mode: str
     attempts: int
     notes: str = ""
+
+
+@dataclass
+class MapsRunResult:
+    success: bool
+    output_dir: Path
+    metadata_path: Optional[Path]
 
 
 def iter_mesh_files(root: Path) -> Iterable[Path]:
@@ -323,7 +333,9 @@ def run_maps_generation(
     output_dir: Path,
     extra_args: List[str],
     output_suffix: Optional[str] = None,
-) -> bool:
+    clean_input: bool = False,
+    clean_min_face_area: float = 0.0,
+) -> MapsRunResult:
     def _tail(text: str, limit: int = 40) -> str:
         lines = text.splitlines()
         if len(lines) > limit:
@@ -334,6 +346,7 @@ def run_maps_generation(
     mesh_path = mesh_path.resolve()
     output_dir = output_dir.resolve()
     output_file = output_dir / f"{mesh_path.stem}_MAPS{output_suffix or mesh_path.suffix}"
+    metadata_path = output_dir / "maps_metadata.json"
 
     if output_dir.exists():
         shutil.rmtree(output_dir)
@@ -356,10 +369,16 @@ def run_maps_generation(
         str(base_size),
         "--depth",
         str(depth),
+        "--metadata",
+        str(metadata_path),
+        "--clean-min-face-area",
+        str(clean_min_face_area),
     ]
     if max_base_size is not None:
         command.extend(["--max_base_size", str(max_base_size)])
     command.extend(passthrough)
+    if clean_input:
+        command.append("--clean-input")
     env = os.environ.copy()
     pythonpath_entries = [str(subdivnet_root)]
     if env.get("PYTHONPATH"):
@@ -388,8 +407,6 @@ def run_maps_generation(
             stderr_tail,
         )
         error_log_dir = output_dir
-        if error_log_dir.exists():
-            shutil.rmtree(error_log_dir)
         error_log_dir.mkdir(parents=True, exist_ok=True)
         _append_error_log(
             error_log_dir,
@@ -404,17 +421,13 @@ def run_maps_generation(
                 completed.stderr or "<empty>",
             ],
         )
-
-        # Clean up and avoid leaving empty *_maps directories.
-        if not any(output_dir.iterdir()):
-            shutil.rmtree(output_dir)
-        return False
+        return MapsRunResult(success=False, output_dir=output_dir, metadata_path=metadata_path if metadata_path.exists() else None)
 
     if stdout_tail:
         logging.debug("MAPS generation stdout for %s: %s", mesh_path.name, stdout_tail)
     if stderr_tail:
         logging.debug("MAPS generation stderr for %s: %s", mesh_path.name, stderr_tail)
-    return True
+    return MapsRunResult(success=True, output_dir=output_dir, metadata_path=metadata_path if metadata_path.exists() else None)
 
 
 def process_mesh(
@@ -426,6 +439,8 @@ def process_mesh(
     subdivnet_root: Optional[Path],
     maps_extra_args: List[str],
     aggressive_repair: bool,
+    clean_maps_input: bool,
+    clean_maps_min_face_area: float,
 ) -> MeshProcessRecord:
     logging.info("Processing %s", source_path)
     mesh = trimesh.load_mesh(source_path, process=False)
@@ -435,6 +450,9 @@ def process_mesh(
 
     maps_generated = False
     maps_output_path: Optional[str] = None
+    maps_metadata_path: Optional[str] = None
+    maps_cleaned_input_path: Optional[str] = None
+    maps_failed_mesh_path: Optional[str] = None
     notes_parts = [f"Repair mode={repair_report.mode}; attempts={repair_report.attempts}."]
     repair_summary_lines = [
         "Repair checkpoint before MAPS:",
@@ -486,13 +504,16 @@ def process_mesh(
                 maps_output_dir = Path(temp_dir) / "maps_output"
                 if maps_output_dir.exists():
                     shutil.rmtree(maps_output_dir)
-                maps_generated = run_maps_generation(
+                maps_result = run_maps_generation(
                     subdivnet_root,
                     temp_repaired_path,
                     maps_output_dir,
                     maps_extra_args,
                     output_suffix=source_path.suffix or ".ply",
+                    clean_input=clean_maps_input,
+                    clean_min_face_area=clean_maps_min_face_area,
                 )
+                maps_generated = maps_result.success
                 target_maps_dir = success_maps_dir if maps_generated else failed_maps_dir
                 target_maps_dir.parent.mkdir(parents=True, exist_ok=True)
                 if target_maps_dir.exists():
@@ -506,6 +527,35 @@ def process_mesh(
                     _append_error_log(target_maps_dir, ["MAPS command failed."] + repair_summary_lines)
                     error_log_path = target_maps_dir / "error.log"
                     notes_parts.append(f"MAPS command failed; see {error_log_path} for details.")
+                metadata_path = target_maps_dir / "maps_metadata.json"
+                maps_metadata_path = str(metadata_path) if metadata_path.exists() else None
+                maps_cleaned_input_path = None
+                maps_failed_mesh_path = None
+                if metadata_path.exists():
+                    with metadata_path.open("r", encoding="utf-8") as meta_handle:
+                        maps_metadata = json.load(meta_handle)
+                    if maps_metadata.get("output_path_relative"):
+                        maps_metadata["output_path"] = str((target_maps_dir / maps_metadata["output_path_relative"]).resolve())
+                    if maps_metadata.get("cleaned_input_relative"):
+                        maps_cleaned_input_path = str((target_maps_dir / maps_metadata["cleaned_input_relative"]).resolve())
+                        maps_metadata["cleaned_input_path"] = maps_cleaned_input_path
+                    if maps_metadata.get("failed_mesh_relative"):
+                        maps_failed_mesh_path = str((target_maps_dir / maps_metadata["failed_mesh_relative"]).resolve())
+                        maps_metadata["failed_mesh_path"] = maps_failed_mesh_path
+                    with metadata_path.open("w", encoding="utf-8") as meta_handle:
+                        json.dump(maps_metadata, meta_handle, indent=2)
+                    cleaning_info = maps_metadata.get("cleaning")
+                    if cleaning_info:
+                        removed_faces = cleaning_info.get("removed_small_or_zero_faces", 0) + cleaning_info.get(
+                            "removed_duplicate_faces", 0
+                        )
+                        notes_parts.append(
+                            f"MAPS cleaning: faces {cleaning_info.get('original_faces')} -> {cleaning_info.get('cleaned_faces')} "
+                            f"(removed {removed_faces}); vertices {cleaning_info.get('original_vertices')} "
+                            f"-> {cleaning_info.get('cleaned_vertices')} (removed {cleaning_info.get('removed_duplicate_vertices', 0)})."
+                        )
+                    if maps_failed_mesh_path and not maps_generated:
+                        notes_parts.append(f"MAPS failed; cleaned input stored at {maps_failed_mesh_path}.")
     notes = "; ".join(notes_parts)
 
     mesh = simplify_mesh(mesh, target_faces)
@@ -528,6 +578,9 @@ def process_mesh(
         repair_mode=repair_report.mode,
         scale=scale,
         maps_generated=maps_generated,
+        maps_metadata_path=maps_metadata_path if generate_maps else None,
+        maps_cleaned_input_path=maps_cleaned_input_path if generate_maps else None,
+        maps_failed_mesh_path=maps_failed_mesh_path if generate_maps else None,
         maps_output_path=maps_output_path,
         notes=notes,
     )
@@ -557,6 +610,20 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
             "<args...>` to forward flags verbatim; this option should be the last one "
             "on the command line."
         ),
+    )
+    parser.add_argument(
+        "--clean_maps_input",
+        action="store_true",
+        help=(
+            "Clean meshes before running MAPS (remove duplicate vertices/faces, drop tiny faces, "
+            "recompute normals). Cleaning happens after repair and before MAPS."
+        ),
+    )
+    parser.add_argument(
+        "--clean_maps_min_face_area",
+        type=float,
+        default=0.0,
+        help="Minimum face area threshold when cleaning MAPS inputs.",
     )
     parser.add_argument(
         "--num_workers",
@@ -607,6 +674,8 @@ def main() -> None:
     maps_extra_args: List[str] = [arg for arg in args.maps_extra_args if arg != "--"]
     num_workers: int = max(args.num_workers, 0)
     aggressive_repair: bool = args.aggressive_repair
+    clean_maps_input: bool = args.clean_maps_input
+    clean_maps_min_face_area: float = args.clean_maps_min_face_area
 
     if not input_dir.exists():
         raise FileNotFoundError(f"Input directory does not exist: {input_dir}")
@@ -645,6 +714,8 @@ def main() -> None:
                         subdivnet_root,
                         maps_extra_args,
                         aggressive_repair,
+                        clean_maps_input,
+                        clean_maps_min_face_area,
                     )
                     for mesh_file in mesh_files
                 ],
@@ -661,6 +732,8 @@ def main() -> None:
                 subdivnet_root,
                 maps_extra_args,
                 aggressive_repair,
+                clean_maps_input,
+                clean_maps_min_face_area,
             )
             records.append(record)
 
