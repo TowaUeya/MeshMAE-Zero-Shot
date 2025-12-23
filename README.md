@@ -106,8 +106,8 @@ python -m src.preprocess.make_manifold_and_maps \
   --num_workers 0 \
   --make_maps \
   --subdivnet_root ../SubdivNet \
-  --maps_extra_args -- --base_size 96 --depth 3 --max_base_size 192 \
-  --metadata datasets/fossils_maps/processing_metadata.json
+  --metadata datasets/fossils_maps/processing_metadata.json \
+  --maps_extra_args -- --base_size 96 --depth 3 --max_base_size 192
 ```
 
 自己交差が多いデータセットで MAPS の winding / 非多様体チェックが頻繁に失敗する場合は、強化修復を有効化します（より多くの穴埋め・ winding 修正・コンポーネント分割を試みます）。
@@ -121,8 +121,8 @@ python -m src.preprocess.make_manifold_and_maps \
   --make_maps \
   --aggressive-repair \
   --subdivnet_root ../SubdivNet \
-  --maps_extra_args -- --base_size 96 --depth 3 --max_base_size 192 \
-  --metadata datasets/fossils_maps/processing_metadata.json
+  --metadata datasets/fossils_maps/processing_metadata.json \
+  --maps_extra_args -- --base_size 96 --depth 3 --max_base_size 192
 ```
 
 `--subdivnet_root` を省略すると `../SubdivNet` を自動的に探します（`datagen_maps.py` が無い場合はエラーになります）。`--maps_extra_args` で渡したいオプションは、すべて末尾に置くか、`--maps_extra_args -- --foo bar` のように区切ってください（`argparse.REMAINDER` で受け取るため）。SubdivNet の依存（`maps` パッケージが要求する `triangle`, `sortedcollections`, `networkx`, `rtree` など）は本リポジトリの `env/requirements.txt` には含まれていないため、必要に応じて SubdivNet 側の仮想環境にインストールしてください。
@@ -206,10 +206,20 @@ python -m pip install -e ../SubdivNet  # maps モジュールを Python から�
     --input input_repaired.obj \
     --out-dir output_maps_dir \
     --output-path output_maps_dir/input_repaired_MAPS.obj \
+    --metadata output_maps_dir/run_metadata.json \
     --base_size 96 --depth 3 --max_base_size 192
   ```
 
    `base_size=96`, `depth=3`, `max_base_size=192` は化石データ向けの保守的な推奨値です。`make_manifold_and_maps.py` から呼ぶ場合は前述の例のように `--maps_extra_args` へ同じオプションを渡します。
+
+   `--metadata` を指定すると、以下の情報を JSON で保存します（親ディレクトリが無ければ自動作成されます）。
+
+   - `attempted_base_sizes`: 試行した base_size のリスト（降順）
+   - `chosen_base_size`: 実際に採用した base_size（失敗時は `null`）
+   - `actual_base_size`: MAPS 実装が報告した base_size（`maps.MAPS.base_size` を優先）
+   - `success`: 成否フラグ
+   - `output_path`: 出力メッシュの絶対パス
+   - `error`: 失敗時のエラーメッセージ
 
 2. **データセット全体をまとめて処理する場合**
 
@@ -220,6 +230,9 @@ python -m pip install -e ../SubdivNet  # maps モジュールを Python から�
 > **Troubleshooting – MAPS ディレクトリが空に見える場合**
 >
 > 以前の実装では SubdivNet をカレントディレクトリにしたまま相対パスの入力/出力を渡していたため、MAPS の出力が別場所へ書き出され、`<stem>_maps/` が空のまま残る不具合がありました。現在は入力メッシュと出力先を絶対パスで渡し、`PYTHONPATH` に SubdivNet を追加することで、期待したフォルダに MAPS ファイルが生成されます。失敗時は `failed/<relative>/<stem>_maps/error.log` を確認してください。
+
+> **テストについて**  
+> MAPS ラッパー CLI の `--metadata` 受け入れと JSON 出力を `src/preprocess/test_run_subdivnet_maps.py` でモック化して検証しています。`pytest src/preprocess/test_run_subdivnet_maps.py -q` で単体実行できます。
 
 生成された MAPS 出力フォルダを本リポジトリ直下に作成した `datasets/` 配下へ配置し、MeshMAE 実行時には `--dataroot` でそのフォルダを指します（例: `--dataroot ./datasets/Manifold40-MAPS-96-3/`）。
 
