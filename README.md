@@ -95,6 +95,9 @@ SubdivNet の `datagen_maps.py` には `if __name__ == "__main__": MAPS_demo1()`
 - 簡略化後のメッシュは `<out>/<stem>.<ext>` に保存されます。500 面以下のメッシュは簡約処理をスキップします。
 - MAPS 出力は `<out>/success/<relative>/<stem>_maps/` に `<stem>_MAPS.<ext>` が生成されます。`<relative>` は入力ルートからの相対パスで、元のフォルダ構造を保ったまま保存されます。失敗した場合はログが `<out>/failed/<relative>/<stem>_maps/error.log` に移動されるため、成功・失敗をディレクトリで分離したうえでトレースを確認できます。
 
+> **修復の強度を切り替える `--aggressive-repair` オプション**<br>
+> 自己交差や非多様体エッジが多いデータでは、MAPS の winding/edge チェックで弾かれることがあります。`--aggressive-repair` を付けると複数回の穴埋め、winding/inversion 修正、コンポーネント分割と watertight かつ winding-consistent な最大コンポーネントの選択を試行し、`failed/.../error.log` には修復後の面数・頂点数・watertight 状態が追記されます。軽量処理を優先したい場合はデフォルトのまま、MAPS 生成の失敗が頻発する場合は `--aggressive-repair` を有効化してください。
+
 ```bash
 python -m src.preprocess.make_manifold_and_maps \
   --in datasets/fossils_raw \
@@ -102,6 +105,21 @@ python -m src.preprocess.make_manifold_and_maps \
   --target_faces 500 \
   --num_workers 0 \
   --make_maps \
+  --subdivnet_root ../SubdivNet \
+  --maps_extra_args -- --base_size 96 --depth 3 --max_base_size 192 \
+  --metadata datasets/fossils_maps/processing_metadata.json
+```
+
+自己交差が多いデータセットで MAPS の winding / 非多様体チェックが頻繁に失敗する場合は、強化修復を有効化します（より多くの穴埋め・ winding 修正・コンポーネント分割を試みます）。
+
+```bash
+python -m src.preprocess.make_manifold_and_maps \
+  --in datasets/fossils_raw \
+  --out datasets/fossils_maps \
+  --target_faces 500 \
+  --num_workers 0 \
+  --make_maps \
+  --aggressive-repair \
   --subdivnet_root ../SubdivNet \
   --maps_extra_args -- --base_size 96 --depth 3 --max_base_size 192 \
   --metadata datasets/fossils_maps/processing_metadata.json
