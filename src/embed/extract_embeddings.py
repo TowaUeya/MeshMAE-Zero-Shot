@@ -236,16 +236,76 @@ def meshmae_embedding_pipeline(
             if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
         ]
         has_varargs = any(p.kind == p.VAR_POSITIONAL for p in signature.parameters.values())
+        attempts = []
+        vertex_names = {"vertices", "verts", "vert", "v", "x", "xyz"}
+        face_names = {"faces", "face", "f", "triangles", "tri"}
+
+        keyword_kwargs = {}
+        for param in params:
+            if param.name in vertex_names:
+                keyword_kwargs[param.name] = vertices
+            if param.name in face_names:
+                keyword_kwargs[param.name] = faces
+        if keyword_kwargs:
+            attempts.append(("keyword", (), keyword_kwargs))
+
+        if len(params) == 1 and params[0].name in {"mesh", "data", "input", "inputs"}:
+            attempts.append(
+                (
+                    "mesh-dict",
+                    (),
+                    {params[0].name: {"vertices": vertices, "faces": faces}},
+                )
+            )
+            attempts.append(("mesh-tuple", (), {params[0].name: (vertices, faces)}))
+
         if has_varargs or len(params) >= 2:
-            return fn(vertices, faces)
+            attempts.append(("positional-2", (vertices, faces), {}))
+
+        required = [p for p in params if p.default is p.empty]
+        if len(required) > 2:
+            extras = []
+            for param in required[2:]:
+                if param.name in {"mask_ratio", "masking_ratio"}:
+                    extras.append(0.0)
+                elif param.name in {"mask", "masked", "return_mask"}:
+                    extras.append(False)
+                else:
+                    extras.append(None)
+            attempts.append(("positional-fill", (vertices, faces, *extras), {}))
+
         if len(params) == 1:
-            return fn(vertices)
+            attempts.append(("positional-1", (vertices,), {}))
+        if not params and not has_varargs:
+            attempts.append(("positional-0", (), {}))
+
+        last_error = None
+        for attempt_label, args, kwargs in attempts:
+            logging.debug(
+                "Attempting MeshMAE inference using %s (%s) with signature %s",
+                label,
+                attempt_label,
+                signature,
+            )
+            try:
+                return fn(*args, **kwargs)
+            except TypeError as exc:
+                last_error = exc
+                logging.debug("Skipping %s due to TypeError: %s", label, exc)
+                continue
+
         logging.debug(
             "Falling back to (vertices, faces) call for %s with signature %s",
             label,
             signature,
         )
-        return fn(vertices, faces)
+        try:
+            return fn(vertices, faces)
+        except TypeError as exc:
+            last_error = exc
+        if last_error is not None:
+            raise last_error
+        raise TypeError(f"No compatible call signature found for {label}.")
 
     def select_encoder_output(model: torch.nn.Module) -> torch.Tensor:
         candidates = []
