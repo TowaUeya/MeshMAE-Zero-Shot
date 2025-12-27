@@ -39,6 +39,7 @@ class ExtractionConfig:
     dataroot: Path
     checkpoint: Optional[Path]
     mesh_extension: Tuple[str, ...]
+    only_repaired_maps: bool
     pool_strategy: str
     batch_size: int
     device: str
@@ -74,6 +75,7 @@ def resolve_config(args: argparse.Namespace) -> ExtractionConfig:
         Path(input_cfg["checkpoint"]) if input_cfg.get("checkpoint") else None
     )
     mesh_extension = tuple(args.mesh_ext or input_cfg.get("mesh_extension", ["ply", "stl"]))
+    only_repaired_maps = args.only_repaired_maps or input_cfg.get("only_repaired_maps", False)
     pool_strategy = args.pool or encoder_cfg.get("pool_strategy", "mean")
     batch_size = args.batch_size or encoder_cfg.get("batch_size", 16)
     device = args.device or encoder_cfg.get("device", "cuda")
@@ -98,6 +100,7 @@ def resolve_config(args: argparse.Namespace) -> ExtractionConfig:
         dataroot=dataroot,
         checkpoint=checkpoint,
         mesh_extension=tuple(ext.lower() for ext in mesh_extension),
+        only_repaired_maps=only_repaired_maps,
         pool_strategy=pool_strategy,
         batch_size=batch_size,
         device=device,
@@ -112,11 +115,14 @@ def resolve_config(args: argparse.Namespace) -> ExtractionConfig:
     )
 
 
-def list_meshes(root: Path, extensions: Tuple[str, ...]) -> List[Path]:
+def list_meshes(root: Path, extensions: Tuple[str, ...], only_repaired_maps: bool) -> List[Path]:
     files = set()
     for ext in extensions:
         files.update(root.rglob(f"*.{ext.lstrip('.')}"))
-    return sorted(files)
+    files = sorted(files)
+    if only_repaired_maps:
+        files = [p for p in files if p.name.endswith("_repaired_MAPS.obj")]
+    return files
 
 
 def compute_geometry_descriptor(mesh: trimesh.Trimesh) -> np.ndarray:
@@ -278,6 +284,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ckpt", type=str, default=None, help="Checkpoint to load")
     parser.add_argument("--data", type=str, default=None, help="Directory with processed meshes")
     parser.add_argument("--mesh-ext", nargs="*", default=None, help="Mesh extensions to include")
+    parser.add_argument(
+        "--only-repaired-maps",
+        action="store_true",
+        help="Only keep meshes ending with _repaired_MAPS.obj",
+    )
     parser.add_argument("--pool", type=str, default=None, choices=["mean", "cls"], help="Pooling strategy")
     parser.add_argument("--batch-size", type=int, default=None, help="Mini-batch size")
     parser.add_argument("--device", type=str, default=None, help="Device identifier (cuda/cpu)")
@@ -310,7 +321,7 @@ def main() -> None:
         config.normalize_embeddings = False
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-    mesh_paths = list_meshes(config.dataroot, config.mesh_extension)
+    mesh_paths = list_meshes(config.dataroot, config.mesh_extension, config.only_repaired_maps)
     if not mesh_paths:
         raise FileNotFoundError(f"No meshes with extensions {config.mesh_extension} found in {config.dataroot}")
 
