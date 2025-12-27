@@ -3,7 +3,8 @@
 The script intentionally supports two modes:
 1. **MeshMAE-driven** (recommended): requires the official MeshMAE repository to be
    installed as a Python package. Users must provide the dotted path to a factory
-   function that returns the encoder (e.g. `meshmae.models_mae.mae_vit_base_patch16`).
+   function or class that returns the encoder (e.g. `meshmae.models_mae.mae_vit_base_patch16`
+   or `model.meshmae.Mesh_mae`).
    The mesh preprocessing follows MeshMAE assumptions (500 faces + MAPS hierarchy).
 2. **Geometry fallback**: if MeshMAE is not available, the script computes handcrafted
    descriptors (surface area, volume, PCA spectrum, bounding box) so that the
@@ -51,8 +52,8 @@ class ExtractionConfig:
     force_geometry: bool
 
 
-def meshmae_available() -> bool:
-    return importlib.util.find_spec("meshmae") is not None
+def module_available(module_name: str) -> bool:
+    return importlib.util.find_spec(module_name) is not None
 
 
 def load_yaml_config(path: Optional[Path]) -> Dict:
@@ -164,11 +165,16 @@ def geometry_embedding_pipeline(mesh_paths: Iterable[Path]) -> Tuple[np.ndarray,
 
 
 def instantiate_model(factory_path: str) -> torch.nn.Module:
-    module_name, func_name = factory_path.rsplit(".", 1)
+    module_name, obj_name = factory_path.rsplit(".", 1)
     module = importlib.import_module(module_name)
-    factory = getattr(module, func_name)
-    model = factory()
-    return model
+    target = getattr(module, obj_name)
+    if isinstance(target, torch.nn.Module):
+        return target
+    if isinstance(target, type) and issubclass(target, torch.nn.Module):
+        return target()
+    if callable(target):
+        return target()
+    raise TypeError(f"{factory_path} is not a callable or torch.nn.Module.")
 
 
 def meshmae_embedding_pipeline(
@@ -282,7 +288,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--meta", type=str, default=None, help="Path to save metadata (.csv)")
     parser.add_argument("--pca-out", type=str, default=None, help="Optional PCA output path (.npy)")
     parser.add_argument("--umap-out", type=str, default=None, help="Optional UMAP output path (.npy)")
-    parser.add_argument("--model-factory", type=str, default=None, help="Dotted path to MeshMAE model factory")
+    parser.add_argument(
+        "--model-factory",
+        type=str,
+        default=None,
+        help="Dotted path to a MeshMAE model factory or class (e.g. meshmae.models_mae.mae_vit_base_patch16)",
+    )
     parser.add_argument("--force-geometry", action="store_true", help="Force handcrafted geometry descriptors")
     return parser.parse_args()
 
@@ -308,12 +319,21 @@ def main() -> None:
     embeddings: np.ndarray
     metadata: List[Dict[str, str]]
 
-    if not config.force_geometry and meshmae_available():
-        logging.info("MeshMAE detected. Attempting encoder-based feature extraction.")
+    meshmae_detected = module_available("meshmae")
+    model_factory_provided = config.model_factory is not None
+
+    if not config.force_geometry and model_factory_provided:
+        logging.info("Model factory provided. Attempting encoder-based feature extraction.")
         embeddings, metadata = meshmae_embedding_pipeline(mesh_paths, config)
     else:
-        if not meshmae_available():
-            logging.warning("MeshMAE package not detected. Falling back to geometry descriptors.")
+        if not config.force_geometry and not model_factory_provided:
+            logging.warning(
+                "No --model-factory provided. Falling back to geometry descriptors."
+            )
+        elif not meshmae_detected and not model_factory_provided:
+            logging.warning(
+                "MeshMAE package not detected. Falling back to geometry descriptors."
+            )
         else:
             logging.info("Using geometry descriptors as requested.")
         embeddings, metadata = geometry_embedding_pipeline(mesh_paths)

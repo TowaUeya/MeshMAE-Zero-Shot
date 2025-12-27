@@ -28,13 +28,15 @@
      --subdivnet_root ../SubdivNet \
      --maps_extra_args -- --base_size 96 --depth 3 --max_base_size 192
    ```
-4. 特徴量抽出（公式MeshMAEベースモデル）
+4. 特徴量抽出（MeshMAE ベースモデル）
    ```bash
    python -m src.embed.extract_embeddings \
      --config configs/extract.yaml \
-     --model-factory meshmae.models_mae.mae_vit_base_patch16 \
+     --model-factory model.meshmae.Mesh_mae \
      --normalize
    ```
+   > `liang3588/MeshMAE` を使う場合は `model.meshmae.Mesh_mae` のようにクラス指定します。\
+   > 旧式の `meshmae.models_mae.mae_vit_base_patch16` 形式は、該当モジュールを提供する別実装向けです。
 5. クラスタリング + レポート生成
    ```bash
    python -m src.cluster.run_clustering \
@@ -385,7 +387,7 @@ python -m pip install -e ../SubdivNet  # maps モジュールを Python から�
    ```bash
    python -m src.embed.extract_embeddings \
      --config configs/extract.yaml \
-     --model-factory meshmae.models_mae.mae_vit_base_patch16 \
+     --model-factory model.meshmae.Mesh_mae \
      --normalize
    ```
    実行後、`embeddings/raw_embeddings.npy` と `embeddings/meta.csv`（パスは YAML の `output.*` で変更可）に特徴量とメタデータが保存されます。`run_target_pretrain.sh` などの継続SSLスクリプトは実行不要です。
@@ -393,13 +395,13 @@ python -m pip install -e ../SubdivNet  # maps モジュールを Python から�
 ```bash
 python -m src.embed.extract_embeddings \
   --config configs/extract.yaml \
-  --model-factory meshmae.models_mae.mae_vit_base_patch16 \
+  --model-factory model.meshmae.Mesh_mae \
   --normalize
 ```
 
 抽出スクリプトには二つのモードがあります。
 
-1. **MeshMAE エンコーダモード**: 公式パッケージを利用し、`--model-factory` でエンコーダ構築関数を指定します。チェックポイント読み込みは `configs/extract.yaml` の `input.checkpoint` で制御され、`forward_encoder(...)` や `encode(...)` を呼び出して CLS トークンまたはパッチ埋め込み平均 (`encoder.pool_strategy`) をプールします。
+1. **MeshMAE エンコーダモード**: 公式パッケージを利用し、`--model-factory` でエンコーダ構築関数またはクラスを指定します。`liang3588/MeshMAE` 系の構成では `model.meshmae.Mesh_mae` のようにクラス指定が必要です（MeshMAE ルートを `PYTHONPATH` に追加）。チェックポイント読み込みは `configs/extract.yaml` の `input.checkpoint` で制御され、`forward_encoder(...)` や `encode(...)` を呼び出して CLS トークンまたはパッチ埋め込み平均 (`encoder.pool_strategy`) をプールします。
 2. **幾何特徴量フォールバックモード**: MeshMAE が利用できない場合は `--force-geometry` を指定するか、自動検出で幾何ベース特徴量（バウンディングボックス、体積、表面積、慣性テンソル、平均曲率など）を算出します。煙試験や軽量検証に便利です。
 
 出力は `embeddings/raw_embeddings.npy`（設定で変更可）とメタデータ CSV として保存されます。必要に応じて PCA/UMAP などの次元削減結果も同時に書き出されます。
