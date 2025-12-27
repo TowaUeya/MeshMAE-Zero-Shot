@@ -20,6 +20,7 @@ import argparse
 import importlib
 import importlib.util
 import inspect
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -118,11 +119,58 @@ def resolve_config(args: argparse.Namespace) -> ExtractionConfig:
     )
 
 
-def list_meshes(root: Path, extensions: Tuple[str, ...], only_repaired_maps: bool) -> List[Path]:
-    files = set()
+def _read_maps_output_path(maps_dir: Path, extensions: Tuple[str, ...]) -> Optional[Path]:
+    metadata_path = maps_dir / "maps_metadata.json"
+    if metadata_path.exists():
+        with metadata_path.open("r", encoding="utf-8") as handle:
+            metadata = json.load(handle)
+        output_path = metadata.get("output_path_relative") or metadata.get("output_path")
+        if output_path:
+            candidate = Path(output_path)
+            if not candidate.is_absolute():
+                candidate = maps_dir / candidate
+            if candidate.exists():
+                return candidate
+
     for ext in extensions:
-        files.update(root.rglob(f"*.{ext.lstrip('.')}"))
-    files = sorted(files)
+        matches = sorted(maps_dir.glob(f"*_MAPS*.{ext.lstrip('.')}"))
+        if matches:
+            return matches[0]
+
+    for ext in extensions:
+        matches = sorted(maps_dir.glob(f"*.{ext.lstrip('.')}"))
+        if matches:
+            return matches[0]
+    return None
+
+
+def _metadata_mesh_path(mesh_path: Path) -> str:
+    if mesh_path.parent.name.endswith("_maps") and mesh_path.parent.parent.name == "success":
+        return str(mesh_path.parent)
+    return str(mesh_path)
+
+
+def list_meshes(root: Path, extensions: Tuple[str, ...], only_repaired_maps: bool) -> List[Path]:
+    maps_root = root / "success"
+    if maps_root.exists():
+        map_files = []
+        for maps_dir in sorted(p for p in maps_root.rglob("*_maps") if p.is_dir()):
+            output_path = _read_maps_output_path(maps_dir, extensions)
+            if output_path is not None:
+                map_files.append(output_path)
+        if map_files:
+            files = sorted(map_files)
+        else:
+            files = []
+    else:
+        files = []
+
+    if not files:
+        gathered = set()
+        for ext in extensions:
+            gathered.update(root.rglob(f"*.{ext.lstrip('.')}"))
+        files = sorted(gathered)
+
     if only_repaired_maps:
         files = [p for p in files if p.name.endswith("_repaired_MAPS.obj")]
     return files
@@ -167,7 +215,7 @@ def geometry_embedding_pipeline(mesh_paths: Iterable[Path]) -> Tuple[np.ndarray,
         mesh = trimesh.load_mesh(mesh_path, process=False)
         vector = compute_geometry_descriptor(mesh)
         embeddings.append(vector)
-        metadata.append({"sample_id": mesh_path.stem, "mesh_path": str(mesh_path)})
+        metadata.append({"sample_id": mesh_path.stem, "mesh_path": _metadata_mesh_path(mesh_path)})
     if not embeddings:
         raise RuntimeError("No embeddings were generated. Check input directory.")
     return np.vstack(embeddings), metadata
@@ -414,7 +462,7 @@ def meshmae_embedding_pipeline(
             embedding = latent
         embedding_np = embedding.detach().cpu().numpy().astype(np.float32)
         embeddings.append(embedding_np.squeeze())
-        metadata.append({"sample_id": mesh_path.stem, "mesh_path": str(mesh_path)})
+        metadata.append({"sample_id": mesh_path.stem, "mesh_path": _metadata_mesh_path(mesh_path)})
 
     stacked = np.vstack(embeddings)
     return stacked, metadata
