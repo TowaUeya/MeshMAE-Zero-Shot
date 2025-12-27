@@ -199,7 +199,26 @@ def meshmae_embedding_pipeline(
 
     checkpoint = torch.load(config.checkpoint, map_location=device)
     state_dict = checkpoint.get("model", checkpoint)
-    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    model_state = model.state_dict()
+    filtered_state: Dict[str, torch.Tensor] = {}
+    mismatched: Dict[str, Tuple[torch.Size, torch.Size]] = {}
+    for key, tensor in state_dict.items():
+        if key not in model_state:
+            continue
+        if model_state[key].shape != tensor.shape:
+            mismatched[key] = (tensor.shape, model_state[key].shape)
+            continue
+        filtered_state[key] = tensor
+    if mismatched:
+        logging.warning(
+            "Skipping %d checkpoint tensors due to shape mismatch: %s",
+            len(mismatched),
+            ", ".join(
+                f"{name} (ckpt={ckpt_shape}, model={model_shape})"
+                for name, (ckpt_shape, model_shape) in mismatched.items()
+            ),
+        )
+    missing, unexpected = model.load_state_dict(filtered_state, strict=False)
     if missing:
         logging.warning("Missing keys when loading checkpoint: %s", missing)
     if unexpected:
