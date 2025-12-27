@@ -17,6 +17,7 @@ import traceback
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import trimesh
 from src.preprocess.clean_mesh import clean_mesh
 
@@ -183,13 +184,22 @@ def run_maps(
 
         return sizes
 
+    def _numpy_to_builtin(value):
+        if isinstance(value, np.integer):
+            return int(value)
+        if isinstance(value, np.floating):
+            return float(value)
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
     def _write_metadata():
         if metadata is None:
             return
         metadata_path = metadata.resolve()
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
         with metadata_path.open("w", encoding="utf-8") as handle:
-            json.dump(metadata_payload, handle, indent=2)
+            json.dump(metadata_payload, handle, indent=2, default=_numpy_to_builtin)
 
     for candidate_size in _candidate_base_sizes():
         attempted_sizes.append(candidate_size)
