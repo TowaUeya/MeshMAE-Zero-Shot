@@ -380,6 +380,10 @@ def run_maps_generation(
     if clean_input:
         command.append("--clean-input")
     env = os.environ.copy()
+    env["OPENBLAS_NUM_THREADS"] = "1"
+    env["OMP_NUM_THREADS"] = "1"
+    env["MKL_NUM_THREADS"] = "1"
+    env["NUMEXPR_NUM_THREADS"] = "1"
     pythonpath_entries = [str(subdivnet_root)]
     if env.get("PYTHONPATH"):
         pythonpath_entries.append(env["PYTHONPATH"])
