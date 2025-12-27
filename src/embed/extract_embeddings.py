@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import importlib.util
+import inspect
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -227,17 +228,64 @@ def meshmae_embedding_pipeline(
     embeddings: List[np.ndarray] = []
     metadata: List[Dict[str, str]] = []
 
+    def call_with_mesh_inputs(fn: callable, label: str) -> torch.Tensor:
+        signature = inspect.signature(fn)
+        params = [
+            p
+            for p in signature.parameters.values()
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+        ]
+        has_varargs = any(p.kind == p.VAR_POSITIONAL for p in signature.parameters.values())
+        if has_varargs or len(params) >= 3:
+            return fn(vertices, faces)
+        if len(params) == 2:
+            return fn(vertices)
+        logging.debug(
+            "Falling back to (vertices, faces) call for %s with signature %s",
+            label,
+            signature,
+        )
+        return fn(vertices, faces)
+
+    def select_encoder_output(model: torch.nn.Module) -> torch.Tensor:
+        candidates = []
+        if hasattr(model, "forward_encoder"):
+            candidates.append(("forward_encoder", model.forward_encoder))
+        if hasattr(model, "encode"):
+            candidates.append(("encode", model.encode))
+        if hasattr(model, "forward_features"):
+            candidates.append(("forward_features", model.forward_features))
+        if hasattr(model, "encoder"):
+            encoder = getattr(model, "encoder")
+            if hasattr(encoder, "forward_encoder"):
+                candidates.append(("encoder.forward_encoder", encoder.forward_encoder))
+            if hasattr(encoder, "encode"):
+                candidates.append(("encoder.encode", encoder.encode))
+            if hasattr(encoder, "forward_features"):
+                candidates.append(("encoder.forward_features", encoder.forward_features))
+            if hasattr(encoder, "forward"):
+                candidates.append(("encoder.forward", encoder.forward))
+        if hasattr(model, "forward"):
+            candidates.append(("forward", model.forward))
+
+        for label, fn in candidates:
+            logging.debug("Attempting MeshMAE inference using %s", label)
+            try:
+                return call_with_mesh_inputs(fn, label)
+            except TypeError as exc:
+                logging.debug("Skipping %s due to TypeError: %s", label, exc)
+                continue
+
+        raise AttributeError(
+            "Provided model does not expose forward_encoder/encode/forward_features or compatible forward method."
+        )
+
     for mesh_path in mesh_paths:
         mesh = trimesh.load_mesh(mesh_path, process=True)
         vertices = torch.tensor(mesh.vertices, dtype=torch.float32, device=device)
         faces = torch.tensor(mesh.faces, dtype=torch.long, device=device)
         with torch.no_grad():
-            if hasattr(model, "forward_encoder"):
-                output = model.forward_encoder(vertices, faces)
-            elif hasattr(model, "encode"):
-                output = model.encode(vertices, faces)
-            else:
-                raise AttributeError("Provided model does not expose forward_encoder/encode methods.")
+            output = select_encoder_output(model)
         if isinstance(output, tuple):
             latent = output[0]
         else:
