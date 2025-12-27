@@ -2,6 +2,50 @@
 
 本リポジトリは、化石や骨格の3Dメッシュを対象としたゼロショット（学習済みモデルの再学習なし）クラスタリングパイプラインを提供します。公式 [MeshMAE](https://github.com/Maple728/MeshMAE) の学習ユーティリティをラップし、化石ドメイン向けの事前学習継続、特徴量抽出、クラスタ数の自動決定、レポート生成までを一貫して実行できるように構成されています。ここでは環境構築から各ステップの意味、関係する用語の詳細解説までを網羅的にまとめています。
 
+## まず最初に（クイックスタート）
+
+最低限の流れだけ先に知りたい方向けに、典型的なコマンドの最短経路を示します。
+
+1. 依存パッケージをインストール
+   ```bash
+   pip install -r env/requirements.txt
+   ```
+2. 生メッシュを配置
+   ```
+   datasets/fossils_raw/
+   ├── sample_01.obj
+   ├── sample_02.stl
+   └── ...
+   ```
+3. メッシュ前処理（多様体化 + 500面化 + MAPS）
+   ```bash
+   python -m src.preprocess.make_manifold_and_maps \
+     --in datasets/fossils_raw \
+     --out datasets/fossils_maps \
+     --target_faces 500 \
+     --num_workers 0 \
+     --make_maps \
+     --subdivnet_root ../SubdivNet \
+     --maps_extra_args -- --base_size 96 --depth 3 --max_base_size 192
+   ```
+4. 特徴量抽出（公式MeshMAEベースモデル）
+   ```bash
+   python -m src.embed.extract_embeddings \
+     --config configs/extract.yaml \
+     --model-factory meshmae.models_mae.mae_vit_base_patch16 \
+     --normalize
+   ```
+5. クラスタリング + レポート生成
+   ```bash
+   python -m src.cluster.run_clustering \
+     --emb embeddings/raw_embeddings.npy \
+     --meta embeddings/meta.csv \
+     --config configs/cluster.yaml \
+     --out-dir out
+   ```
+
+> 継続SSL（ドメイン適応）を行う場合は、後述の「2. 自己教師あり学習の継続」を参照してください。
+
 ## リポジトリ全体像
 
 ```
@@ -40,6 +84,16 @@ meshmae-zero-shot/
 
 `.gitignore` により大容量成果物はバージョン管理対象外ですが、空ディレクトリを維持するために `.gitkeep` が配置されています。
 
+## どのファイルを編集すべきか（設定ファイルの役割）
+
+| ファイル | 役割 | 代表的に変更する項目 |
+| --- | --- | --- |
+| `configs/pretrain_target.yaml` | 継続SSL（ドメイン適応）の設定 | `dataroot`, `init_checkpoint`, `save_checkpoint`, `epochs`, `batch_size` |
+| `configs/extract.yaml` | 特徴量抽出の設定 | `input.dataroot`, `input.checkpoint`, `encoder.pool_strategy`, `output.*` |
+| `configs/cluster.yaml` | クラスタリングと自動K推定 | `kmeans.max_k`, `hdbscan.min_cluster_size`, `auto_k.weights`, `pca.n_components` |
+
+> 設定ファイルは YAML なので、インデントやスペースが崩れると読み込めません。編集後は `python -m src.embed.extract_embeddings --config configs/extract.yaml --dry-run` のような簡易実行で検証することを推奨します。
+
 ## 背景とコンセプト
 
 ### ゼロショットクラスタリングとは？
@@ -77,6 +131,23 @@ pip install -r env/requirements.txt
 - `datasets/fossils_raw/`: ユーザーが用意する生データを配置します。PLY/STL/OBJ など一般的なポリゴンメッシュ形式に対応しています。
 - `datasets/fossils_maps/`: 前処理済みデータを保存します。メッシュは多様体化され、面数が揃えられ、必要に応じて MAPS 階層が作成されます。
 - 任意でメタデータ CSV（最低でも `sample_id` 列）を用意すると、クラスタリング後の分析が容易になります。
+
+### 推奨ディレクトリ構造（実データと成果物）
+
+```
+datasets/
+├── fossils_raw/        # 生メッシュ（入力）
+└── fossils_maps/       # 前処理済みメッシュ（MAPS 付）
+
+embeddings/
+├── raw_embeddings.npy
+└── meta.csv
+
+out/
+├── cluster/
+├── plots/
+└── report.html
+```
 
 ## ステップ別手順
 
@@ -242,6 +313,18 @@ python -m pip install -e ../SubdivNet  # maps モジュールを Python から�
 
 生成された MAPS 出力フォルダを本リポジトリ直下に作成した `datasets/` 配下へ配置し、MeshMAE 実行時には `--dataroot` でそのフォルダを指します（例: `--dataroot ./datasets/Manifold40-MAPS-96-3/`）。
 
+#### 前処理で生成されるマニフェストの読み方（例）
+
+`--metadata` を指定すると、処理済みメッシュごとのメタデータが JSON で保存されます。代表的な項目は以下です。
+
+- `input_path` / `output_path`: 入力・出力メッシュのパス
+- `faces_before` / `faces_after`: デシメーション前後の面数
+- `manifold_repair`: 修復の有無や実行ログ
+- `maps.success`: MAPS 成功 여부
+- `maps.output_path`: MAPS 出力パス
+
+失敗時は `failed/.../error.log` と合わせてこの JSON を確認すると、失敗原因の切り分けが容易になります。
+
 ### 2. 自己教師あり学習の継続（ドメイン適応）
 #### 継続SSLの実行方法
 1. `checkpoints/shapenet_pretrain.pkl` に公式 MeshMAE の事前学習済みチェックポイントを配置します。
@@ -321,6 +404,15 @@ python -m src.embed.extract_embeddings \
 
 出力は `embeddings/raw_embeddings.npy`（設定で変更可）とメタデータ CSV として保存されます。必要に応じて PCA/UMAP などの次元削減結果も同時に書き出されます。
 
+#### 代表的な出力ファイル
+
+| 出力 | 説明 |
+| --- | --- |
+| `embeddings/raw_embeddings.npy` | 生の埋め込みベクトル |
+| `embeddings/meta.csv` | メッシュごとの ID・パス・ラベル等 |
+| `embeddings/pca_embeddings.npy` | PCA 後の特徴量（設定次第） |
+| `embeddings/umap_embeddings.npy` | UMAP 後の特徴量（設定次第） |
+
 ### 4. クラスタ数自動決定とクラスタリング、レポート生成
 クラスタリングパイプラインでは、特徴量の標準化・PCA を施した後に複数指標を用いてクラスタ数 `k` を自動推定し、K-Means と HDBSCAN によるクラスタリング、未知クラス検出、可視化プロット、HTML レポート生成まで行います。
 
@@ -340,6 +432,10 @@ python -m src.cluster.run_clustering \
 - `out/cluster/summary.json`
 - `out/plots/*.png`（エルボー法、シルエット、ギャップ統計、GMM BIC、UMAP など）
 - `out/report.html`（テンプレートは `src/cluster/templates/report.html`）
+
+#### 自動K推定の仕組み（概要）
+
+`src/cluster/auto_k.py` では複数の評価指標（エルボー法、シルエット、ギャップ統計、GMM BIC など）を計算し、それぞれのスコアを重み付け平均して `k*` を推定します。`configs/cluster.yaml` の `auto_k.weights` を調整することで、どの指標を重視するかを制御できます。
 
 ### 5. 階層クラスタリング & デンドログラム
 
@@ -366,6 +462,8 @@ python -m src.cluster.plot_dendrogram \
 - **CUDA エラー**: `torch.cuda.is_available()` が False の場合は CPU 実行に切り替わりますが、学習時間が長くなります。CUDA ドライバと PyTorch のバージョン互換を確認してください。
 - **メッシュの非多様体問題**: `make_manifold_and_maps.py` のログで警告が出た場合は、入力メッシュの自動修復が難しい可能性があります。メッシュ修復ツール（MeshLab など）で事前に問題箇所を修正してください。
 - **クラスタ数のばらつき**: 自動推定指標が一致しない場合があります。`configs/cluster.yaml` の重み付けや `min_cluster_size` を調整し、専門家の知見で結果をレビューすることを推奨します。
+- **MAPS 生成が遅い/失敗する**: SubdivNet の依存が正しく入っているか（`triangle`, `rtree`, `sortedcollections` など）を確認し、`--aggressive-repair` や `--clean_maps_input` を試してください。
+- **可視化が真っ白になる**: `pyvista` のバックエンドが headless 環境に非対応な場合があります。`PYVISTA_OFF_SCREEN=true` を設定し、仮想フレームバッファを用意してください。
 
 ## 用語解説
 
