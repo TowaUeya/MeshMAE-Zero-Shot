@@ -3,6 +3,7 @@ input:
   dataroot: ./datasets/fossils_maps
   checkpoint: ../MeshMAE/checkpoints/shapenet_pretrain.pkl
   mesh_extension: ["ply", "stl", "obj"]
+  only_repaired_maps: false
 
 encoder:
   pool_strategy: mean  # options: cls, mean
