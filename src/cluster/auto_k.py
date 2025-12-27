@@ -166,5 +166,3 @@ def auto_select_k(
         bic_k=bic_k,
         curves=curves,
     )
-
-*** End Patch
