@@ -12,10 +12,16 @@ import argparse
 import importlib
 import json
 import logging
+import os
 import sys
 import traceback
 from pathlib import Path
 from typing import Optional
+
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import numpy as np
 import trimesh
