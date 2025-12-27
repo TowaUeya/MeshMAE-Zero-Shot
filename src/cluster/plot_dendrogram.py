@@ -37,7 +37,13 @@ def parse_args() -> argparse.Namespace:
         "--kmeans",
         type=Path,
         required=True,
-        help="CSV file produced by run_clustering with a 'label' column.",
+        help="CSV file produced by run_clustering with K-Means assignments.",
+    )
+    parser.add_argument(
+        "--label-column",
+        type=str,
+        default=None,
+        help="Optional column name to use for K-Means labels (defaults to auto-detect).",
     )
     parser.add_argument(
         "--meta",
@@ -107,6 +113,22 @@ def load_metadata(path: Optional[Path], n_samples: int) -> Optional[pd.Series]:
             f"{len(df['sample_id'])} vs {n_samples})."
         )
     return df["sample_id"].astype(str)
+
+
+def resolve_kmeans_labels(df: pd.DataFrame, label_column: Optional[str]) -> np.ndarray:
+    if label_column:
+        if label_column not in df.columns:
+            raise ValueError(f"Requested label column '{label_column}' not found in K-Means CSV.")
+        return df[label_column].to_numpy()
+
+    for candidate in ("label", "kmeans", "consensus"):
+        if candidate in df.columns:
+            return df[candidate].to_numpy()
+
+    raise ValueError(
+        "K-Means assignments CSV must contain a 'label', 'kmeans', or 'consensus' column, "
+        "or specify --label-column."
+    )
 
 
 def variation_of_information(labels_a: np.ndarray, labels_b: np.ndarray) -> float:
@@ -184,9 +206,7 @@ def main() -> None:
 
     embeddings = load_embeddings(args.emb)
     kmeans_df = pd.read_csv(args.kmeans)
-    if "label" not in kmeans_df.columns:
-        raise ValueError("K-Means assignments CSV must contain a 'label' column.")
-    kmeans_labels = kmeans_df["label"].to_numpy()
+    kmeans_labels = resolve_kmeans_labels(kmeans_df, args.label_column)
 
     if len(kmeans_labels) != embeddings.shape[0]:
         raise ValueError(
