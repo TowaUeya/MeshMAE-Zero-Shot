@@ -236,9 +236,9 @@ def meshmae_embedding_pipeline(
             if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
         ]
         has_varargs = any(p.kind == p.VAR_POSITIONAL for p in signature.parameters.values())
-        if has_varargs or len(params) >= 3:
+        if has_varargs or len(params) >= 2:
             return fn(vertices, faces)
-        if len(params) == 2:
+        if len(params) == 1:
             return fn(vertices)
         logging.debug(
             "Falling back to (vertices, faces) call for %s with signature %s",
