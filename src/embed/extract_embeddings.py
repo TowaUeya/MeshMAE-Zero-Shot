@@ -34,6 +34,8 @@ import trimesh
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
+from .meshmae_inputs import build_meshmae_inputs
+
 
 @dataclass
 class ExtractionConfig:
@@ -162,7 +164,7 @@ def geometry_embedding_pipeline(mesh_paths: Iterable[Path]) -> Tuple[np.ndarray,
     embeddings: List[np.ndarray] = []
     metadata: List[Dict[str, str]] = []
     for mesh_path in mesh_paths:
-        mesh = trimesh.load_mesh(mesh_path, process=True)
+        mesh = trimesh.load_mesh(mesh_path, process=False)
         vector = compute_geometry_descriptor(mesh)
         embeddings.append(vector)
         metadata.append({"sample_id": mesh_path.stem, "mesh_path": str(mesh_path)})
@@ -307,7 +309,54 @@ def meshmae_embedding_pipeline(
             raise last_error
         raise TypeError(f"No compatible call signature found for {label}.")
 
-    def select_encoder_output(model: torch.nn.Module) -> torch.Tensor:
+    def call_with_meshmae_inputs(fn: callable, label: str, mesh_inputs: Tuple[torch.Tensor, ...]) -> torch.Tensor:
+        signature = inspect.signature(fn)
+        params = [
+            p
+            for p in signature.parameters.values()
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+        ]
+        faces_input, feats_input, centers_input, Fs_input, cordinates_input = mesh_inputs
+        keyword_kwargs = {}
+        for param in params:
+            if param.name == "faces":
+                keyword_kwargs[param.name] = faces_input
+            elif param.name == "feats":
+                keyword_kwargs[param.name] = feats_input
+            elif param.name == "centers":
+                keyword_kwargs[param.name] = centers_input
+            elif param.name in {"Fs", "fs"}:
+                keyword_kwargs[param.name] = Fs_input
+            elif param.name in {"cordinates", "coordinates"}:
+                keyword_kwargs[param.name] = cordinates_input
+        attempts = []
+        if keyword_kwargs:
+            attempts.append(("keyword", (), keyword_kwargs))
+        if len(params) >= 5:
+            attempts.append(("positional-5", mesh_inputs, {}))
+        if len(params) >= 1:
+            attempts.append(("positional-1", (faces_input,), {}))
+
+        last_error = None
+        for attempt_label, args, kwargs in attempts:
+            logging.debug(
+                "Attempting MeshMAE inference using %s (%s) with signature %s",
+                label,
+                attempt_label,
+                signature,
+            )
+            try:
+                return fn(*args, **kwargs)
+            except TypeError as exc:
+                last_error = exc
+                logging.debug("Skipping %s due to TypeError: %s", label, exc)
+                continue
+
+        if last_error is not None:
+            raise last_error
+        raise TypeError(f"No compatible MeshMAE input signature found for {label}.")
+
+    def select_encoder_output(model: torch.nn.Module, mesh_inputs: Tuple[torch.Tensor, ...]) -> torch.Tensor:
         candidates = []
         if hasattr(model, "forward_encoder"):
             candidates.append(("forward_encoder", model.forward_encoder))
@@ -330,6 +379,11 @@ def meshmae_embedding_pipeline(
 
         for label, fn in candidates:
             logging.debug("Attempting MeshMAE inference using %s", label)
+            if label == "forward":
+                try:
+                    return call_with_meshmae_inputs(fn, label, mesh_inputs)
+                except TypeError as exc:
+                    logging.debug("Skipping %s due to TypeError: %s", label, exc)
             try:
                 return call_with_mesh_inputs(fn, label)
             except TypeError as exc:
@@ -342,10 +396,11 @@ def meshmae_embedding_pipeline(
 
     for mesh_path in mesh_paths:
         mesh = trimesh.load_mesh(mesh_path, process=True)
+        mesh_inputs = build_meshmae_inputs(mesh, device)
         vertices = torch.tensor(mesh.vertices, dtype=torch.float32, device=device)
         faces = torch.tensor(mesh.faces, dtype=torch.long, device=device)
         with torch.no_grad():
-            output = select_encoder_output(model)
+            output = select_encoder_output(model, mesh_inputs)
         if isinstance(output, tuple):
             latent = output[0]
         else:

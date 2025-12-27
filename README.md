@@ -401,7 +401,7 @@ python -m src.embed.extract_embeddings \
 
 抽出スクリプトには二つのモードがあります。
 
-1. **MeshMAE エンコーダモード**: 公式パッケージを利用し、`--model-factory` でエンコーダ構築関数またはクラスを指定します。`liang3588/MeshMAE` 系の構成では `model.meshmae.Mesh_mae` のようにクラス指定が必要です（MeshMAE ルートを `PYTHONPATH` に追加）。チェックポイント読み込みは `configs/extract.yaml` の `input.checkpoint` で制御され、`forward_encoder(...)` や `encode(...)` を呼び出して CLS トークンまたはパッチ埋め込み平均 (`encoder.pool_strategy`) をプールします。
+1. **MeshMAE エンコーダモード**: 公式パッケージを利用し、`--model-factory` でエンコーダ構築関数またはクラスを指定します。`liang3588/MeshMAE` 系の構成では `model.meshmae.Mesh_mae` のようにクラス指定が必要です（MeshMAE ルートを `PYTHONPATH` に追加）。チェックポイント読み込みは `configs/extract.yaml` の `input.checkpoint` で制御されます。`src/embed/meshmae_inputs.py` が MAPS メッシュから MeshMAE の入力テンソル（`faces`, `feats`, `centers`, `Fs`, `cordinates`）を構築し、`Mesh_mae.forward` 互換の形状（`patch_size=64`, `num_patches=256`, `channels=13`）でアダプタ経由で呼び出します。`forward_encoder(...)` や `encode(...)` が存在するモデルでは従来どおり CLS トークンまたはパッチ埋め込み平均 (`encoder.pool_strategy`) をプールします。
 2. **幾何特徴量フォールバックモード**: MeshMAE が利用できない場合は `--force-geometry` を指定するか、自動検出で幾何ベース特徴量（バウンディングボックス、体積、表面積、慣性テンソル、平均曲率など）を算出します。煙試験や軽量検証に便利です。
 
 出力は `embeddings/raw_embeddings.npy`（設定で変更可）とメタデータ CSV として保存されます。必要に応じて PCA/UMAP などの次元削減結果も同時に書き出されます。
