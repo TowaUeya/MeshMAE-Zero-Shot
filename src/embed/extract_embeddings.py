@@ -404,6 +404,31 @@ def meshmae_embedding_pipeline(
             raise last_error
         raise TypeError(f"No compatible MeshMAE input signature found for {label}.")
 
+    def extract_output_tensor(output: object) -> Optional[torch.Tensor]:
+        if isinstance(output, torch.Tensor):
+            return output
+        if isinstance(output, dict):
+            tensors = [value for value in output.values() if isinstance(value, torch.Tensor)]
+        elif isinstance(output, (tuple, list)):
+            tensors = [value for value in output if isinstance(value, torch.Tensor)]
+        else:
+            tensors = []
+        if not tensors:
+            return None
+        return max(tensors, key=lambda tensor: tensor.numel())
+
+    def extract_embedding(output: object) -> Optional[torch.Tensor]:
+        latent = extract_output_tensor(output)
+        if latent is None:
+            return None
+        if latent.dim() > 2:
+            embedding = latent[:, 0, :] if config.pool_strategy == "cls" else latent.mean(dim=1)
+        else:
+            embedding = latent
+        if embedding.numel() < 8:
+            return None
+        return embedding
+
     def select_encoder_output(model: torch.nn.Module, mesh_inputs: Tuple[torch.Tensor, ...]) -> torch.Tensor:
         candidates = []
         if hasattr(model, "forward_encoder"):
@@ -425,20 +450,34 @@ def meshmae_embedding_pipeline(
             if hasattr(encoder, "forward"):
                 candidates.append(("encoder.forward", encoder.forward))
 
+        last_shape: Optional[torch.Size] = None
         for label, fn in candidates:
             logging.debug("Attempting MeshMAE inference using %s", label)
             try:
-                return call_with_meshmae_inputs(fn, label, mesh_inputs)
+                output = call_with_meshmae_inputs(fn, label, mesh_inputs)
             except TypeError as exc:
                 logging.debug("Skipping %s due to TypeError: %s", label, exc)
+            else:
+                embedding = extract_embedding(output)
+                if embedding is not None:
+                    return embedding
+                last_shape = output.shape if isinstance(output, torch.Tensor) else None
+                logging.debug("Skipping %s due to invalid embedding output shape.", label)
             try:
-                return call_with_mesh_inputs(fn, label)
+                output = call_with_mesh_inputs(fn, label)
             except TypeError as exc:
                 logging.debug("Skipping %s due to TypeError: %s", label, exc)
                 continue
+            embedding = extract_embedding(output)
+            if embedding is not None:
+                return embedding
+            last_shape = output.shape if isinstance(output, torch.Tensor) else None
+            logging.debug("Skipping %s due to invalid embedding output shape.", label)
 
+        shape_message = f" Last output shape: {last_shape}." if last_shape is not None else ""
         raise AttributeError(
-            "Provided model does not expose forward_encoder/encode/forward_features or compatible encoder method."
+            "Provided model does not expose a compatible encoder output that yields embeddings."
+            f"{shape_message}"
         )
 
     for mesh_path in mesh_paths:
@@ -447,24 +486,9 @@ def meshmae_embedding_pipeline(
         vertices = torch.tensor(mesh.vertices, dtype=torch.float32, device=device)
         faces = torch.tensor(mesh.faces, dtype=torch.long, device=device)
         with torch.no_grad():
-            output = select_encoder_output(model, mesh_inputs)
-        if isinstance(output, tuple):
-            latent = output[0]
-        else:
-            latent = output
-        if latent.dim() > 2:
-            if config.pool_strategy == "cls":
-                embedding = latent[:, 0, :]
-            else:
-                embedding = latent.mean(dim=1)
-        else:
-            embedding = latent
+            embedding = select_encoder_output(model, mesh_inputs)
         embedding_np = embedding.detach().cpu().numpy().astype(np.float32)
         embedding_vec = embedding_np.reshape(-1)
-        if embedding_vec.size < 8:
-            raise RuntimeError(
-                "Embedding dimension is too small; check that encoder outputs features and not scalar loss."
-            )
         embeddings.append(embedding_vec)
         metadata.append({"sample_id": mesh_path.stem, "mesh_path": _metadata_mesh_path(mesh_path)})
 
