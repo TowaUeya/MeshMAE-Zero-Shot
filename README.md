@@ -459,6 +459,20 @@ python -m src.cluster.plot_dendrogram \
 
 距離閾値でカットしたい場合は `--distance-threshold`、既存の K* とは異なるクラスタ数で比較したい場合は `--max-clusters` を指定してください。高さカットの目安として、デンドログラムの“U字”の高さ（コーフェネティック距離）を参照すると理解しやすくなります。
 
+**大量の葉ラベル対策**: サンプル数が多いときは DPI を上げてもラベルが読めないため、`--label-mode` で挙動を切り替えてください。既定の `auto` は葉数が閾値を超えると `truncate` または `none` に切り替えます。`--format pdf/svg` のベクタ出力も推奨です。
+
+```bash
+python -m src.cluster.plot_dendrogram \
+  --emb embeddings/pca_embeddings.npy \
+  --kmeans out/cluster/kmeans_assignments.csv \
+  --meta embeddings/meta.csv \
+  --label-mode truncate \
+  --truncate-mode lastp \
+  --p 100 \
+  --format pdf \
+  --label-map-out out/plots/dendrogram_label_map.csv
+```
+
 ## トラブルシューティングとヒント
 
 - **CUDA エラー**: `torch.cuda.is_available()` が False の場合は CPU 実行に切り替わりますが、学習時間が長くなります。CUDA ドライバと PyTorch のバージョン互換を確認してください。
