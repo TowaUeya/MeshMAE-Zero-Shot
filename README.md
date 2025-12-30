@@ -41,6 +41,13 @@
    > **注意:** 特徴量抽出では `forward_encoder/encode/forward_features` などのエンコーダ系メソッドのみを利用します。\
    > `forward` は loss を返す実装が多く、埋め込みとして扱うと次元が潰れてクラスタリングが退化するため対象外です。\
    > もし抽出ベクトルが極端に小さい（例: 8 次元未満）場合は、モデルの組み合わせや入力形式を確認してください。
+   >
+   > **MeshMAE 公式 ckpt の入力について:** 公式 `shapenet_pretrain.pkl` は論文準拠の 10ch 特徴量
+   > （area 1 + interior angles 3 + face normal 3 + face normal⋅vertex normals 3）を想定し、
+   > 1 patch = 64 faces（3 回 subdivide）で学習されています。\
+   > 本リポジトリのデフォルト `feature_mode=paper10` は公式 ckpt に合わせて 10ch を生成します。
+   > 以前の 13ch（center を含む独自特徴）は `feature_mode=legacy13` に切り替え可能ですが、
+   > 公式 ckpt とは互換性がありません。
 5. クラスタリング + レポート生成
    ```bash
    python -m src.cluster.run_clustering \
@@ -168,6 +175,12 @@ SubdivNet の `datagen_maps.py` には `if __name__ == "__main__": MAPS_demo1()`
 - `base_size` / `depth` / `max_base_size` は `--maps_extra_args` 経由で受け取り、拡張子付きの出力パス（例: `<outdir>/<stem>_MAPS.obj`）を必ず渡す。
 
 `make_manifold_and_maps.py` 側は常にこのラッパーを subprocess で呼び出します。前処理中に SubdivNet 側の `__main__` ブロックが実行されることはなくなり、入力/出力を絶対パスで渡すことでパス解決事故を防ぎます。
+
+MAPS が失敗しやすいデータセット向けに、前処理を止めずに続行するオプションも用意しています。
+
+- `--skip_failed_maps`: MAPS 失敗時にそのメッシュだけ失敗扱いで続行（デフォルト挙動）。
+- `--fail_on_maps_error`: MAPS 失敗時に即停止。
+- `--dump_failed_cases <DIR>`: 失敗メッシュと簡易レポート（faces/verts/min_area/components など）を保存。
 
 - 簡略化後のメッシュは `<out>/<stem>.<ext>` に保存されます。500 面以下のメッシュは簡約処理をスキップします。
 - MAPS 出力は `<out>/success/<relative>/<stem>_maps/` に `<stem>_MAPS.<ext>` が生成されます。`<relative>` は入力ルートからの相対パスで、元のフォルダ構造を保ったまま保存されます。失敗した場合はログが `<out>/failed/<relative>/<stem>_maps/error.log` に移動されるため、成功・失敗をディレクトリで分離したうえでトレースを確認できます。

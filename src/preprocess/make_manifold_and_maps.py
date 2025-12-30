@@ -186,6 +186,49 @@ def _append_error_log(log_dir: Path, lines: List[str]) -> Path:
     return error_log
 
 
+def _mesh_stats(mesh: trimesh.Trimesh, min_face_area: float) -> dict:
+    try:
+        areas = mesh.area_faces
+        min_area = float(np.min(areas)) if len(areas) else 0.0
+        degenerate = int(np.count_nonzero(areas <= max(min_face_area, 0.0)))
+    except Exception:
+        min_area = 0.0
+        degenerate = 0
+    try:
+        components = len(mesh.split(only_watertight=False))
+    except Exception:
+        components = 1
+    return {
+        "faces": int(len(mesh.faces)),
+        "vertices": int(len(mesh.vertices)),
+        "min_face_area": float(min_area),
+        "degenerate_faces": int(degenerate),
+        "components": int(components),
+    }
+
+
+def _write_maps_failure_metadata(
+    target_maps_dir: Path,
+    reasons: List[str],
+    repair_report: RepairReport,
+    mesh: trimesh.Trimesh,
+    clean_min_face_area: float,
+) -> None:
+    payload = {
+        "success": False,
+        "output_path": str(target_maps_dir),
+        "output_path_relative": target_maps_dir.name,
+        "error": "; ".join(reasons),
+        "failure_reasons": reasons,
+        "mesh_stats": _mesh_stats(mesh, min_face_area=clean_min_face_area),
+        "repair": asdict(repair_report),
+    }
+    target_maps_dir.mkdir(parents=True, exist_ok=True)
+    metadata_path = target_maps_dir / "maps_metadata.json"
+    with metadata_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+
+
 def _quality_snapshot(mesh: trimesh.Trimesh) -> dict:
     return {
         "faces": len(mesh.faces),
@@ -335,6 +378,8 @@ def run_maps_generation(
     output_suffix: Optional[str] = None,
     clean_input: bool = False,
     clean_min_face_area: float = 0.0,
+    skip_failed_maps: bool = False,
+    dump_failed_cases: Optional[Path] = None,
 ) -> MapsRunResult:
     def _tail(text: str, limit: int = 40) -> str:
         lines = text.splitlines()
@@ -379,6 +424,10 @@ def run_maps_generation(
     command.extend(passthrough)
     if clean_input:
         command.append("--clean-input")
+    if skip_failed_maps:
+        command.append("--skip-failed-maps")
+    if dump_failed_cases is not None:
+        command.extend(["--dump-failed-cases", str(dump_failed_cases)])
     env = os.environ.copy()
     env["OPENBLAS_NUM_THREADS"] = "1"
     env["OMP_NUM_THREADS"] = "1"
@@ -445,6 +494,8 @@ def process_mesh(
     aggressive_repair: bool,
     clean_maps_input: bool,
     clean_maps_min_face_area: float,
+    skip_failed_maps: bool,
+    dump_failed_cases: Optional[Path],
 ) -> MeshProcessRecord:
     logging.info("Processing %s", source_path)
     mesh = trimesh.load_mesh(source_path, process=False)
@@ -490,6 +541,30 @@ def process_mesh(
             if target_maps_dir.exists():
                 shutil.rmtree(target_maps_dir)
             _append_error_log(target_maps_dir, maps_failure_reasons + repair_summary_lines)
+            _write_maps_failure_metadata(
+                target_maps_dir,
+                maps_failure_reasons,
+                repair_report,
+                mesh,
+                clean_maps_min_face_area,
+            )
+            maps_metadata_path = str((target_maps_dir / "maps_metadata.json").resolve())
+            if dump_failed_cases is not None:
+                dump_failed_cases.mkdir(parents=True, exist_ok=True)
+                failed_mesh_path = dump_failed_cases / f"{source_path.stem}_precheck_failed{source_path.suffix or '.ply'}"
+                report_path = dump_failed_cases / f"{source_path.stem}_precheck_failed.json"
+                mesh.export(failed_mesh_path)
+                with report_path.open("w", encoding="utf-8") as handle:
+                    json.dump(
+                        {
+                            "source": str(source_path),
+                            "failure_reasons": maps_failure_reasons,
+                            "mesh_stats": _mesh_stats(mesh, min_face_area=clean_maps_min_face_area),
+                            "repair": asdict(repair_report),
+                        },
+                        handle,
+                        indent=2,
+                    )
             maps_output_path = str(target_maps_dir)
             notes_parts.extend(maps_failure_reasons)
             maps_generated = False
@@ -516,6 +591,8 @@ def process_mesh(
                     output_suffix=source_path.suffix or ".ply",
                     clean_input=clean_maps_input,
                     clean_min_face_area=clean_maps_min_face_area,
+                    skip_failed_maps=skip_failed_maps,
+                    dump_failed_cases=dump_failed_cases,
                 )
                 maps_generated = maps_result.success
                 target_maps_dir = success_maps_dir if maps_generated else failed_maps_dir
@@ -531,6 +608,8 @@ def process_mesh(
                     _append_error_log(target_maps_dir, ["MAPS command failed."] + repair_summary_lines)
                     error_log_path = target_maps_dir / "error.log"
                     notes_parts.append(f"MAPS command failed; see {error_log_path} for details.")
+                    if not skip_failed_maps:
+                        raise RuntimeError(f"MAPS generation failed for {source_path}")
                 metadata_path = target_maps_dir / "maps_metadata.json"
                 maps_metadata_path = str(metadata_path) if metadata_path.exists() else None
                 maps_cleaned_input_path = None
@@ -630,6 +709,22 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="Minimum face area threshold when cleaning MAPS inputs.",
     )
     parser.add_argument(
+        "--skip_failed_maps",
+        action="store_true",
+        help="Continue the pipeline even when MAPS fails for a mesh (default behavior).",
+    )
+    parser.add_argument(
+        "--fail_on_maps_error",
+        action="store_true",
+        help="Stop the pipeline when MAPS fails for a mesh.",
+    )
+    parser.add_argument(
+        "--dump_failed_cases",
+        type=Path,
+        default=None,
+        help="Optional directory to dump failed MAPS inputs and reports.",
+    )
+    parser.add_argument(
         "--num_workers",
         type=int,
         default=0,
@@ -680,6 +775,8 @@ def main() -> None:
     aggressive_repair: bool = args.aggressive_repair
     clean_maps_input: bool = args.clean_maps_input
     clean_maps_min_face_area: float = args.clean_maps_min_face_area
+    skip_failed_maps: bool = args.skip_failed_maps or not args.fail_on_maps_error
+    dump_failed_cases: Optional[Path] = args.dump_failed_cases
 
     if not input_dir.exists():
         raise FileNotFoundError(f"Input directory does not exist: {input_dir}")
@@ -720,6 +817,8 @@ def main() -> None:
                         aggressive_repair,
                         clean_maps_input,
                         clean_maps_min_face_area,
+                        skip_failed_maps,
+                        dump_failed_cases,
                     )
                     for mesh_file in mesh_files
                 ],
@@ -738,6 +837,8 @@ def main() -> None:
                 aggressive_repair,
                 clean_maps_input,
                 clean_maps_min_face_area,
+                skip_failed_maps,
+                dump_failed_cases,
             )
             records.append(record)
 
@@ -747,6 +848,7 @@ def main() -> None:
         "input_dir": str(input_dir),
         "output_dir": str(output_dir),
         "target_faces": target_faces,
+        "skip_failed_maps": skip_failed_maps,
         "records": [asdict(record) for record in records],
     }
     metadata_path.parent.mkdir(parents=True, exist_ok=True)

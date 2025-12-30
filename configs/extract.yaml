@@ -12,6 +12,9 @@ encoder:
   num_workers: 32
   normalize_embeddings: true
   save_layer_tokens: false
+  feature_mode: paper10  # paper10 (official 10ch) or legacy13
+  model_factory_kwargs:
+    channels: 10
 
 output:
   embedding_path: ./embeddings/raw_embeddings.npy
