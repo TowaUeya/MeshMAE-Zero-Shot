@@ -377,11 +377,29 @@ def meshmae_embedding_pipeline(
                 keyword_kwargs[param.name] = Fs_input
             elif param.name in {"cordinates", "coordinates"}:
                 keyword_kwargs[param.name] = cordinates_input
+            elif param.default is param.empty:
+                if param.name in {"mask_ratio", "masking_ratio"}:
+                    keyword_kwargs[param.name] = 0.0
+                elif param.name in {"mask", "masked", "return_mask"}:
+                    keyword_kwargs[param.name] = False
+                else:
+                    keyword_kwargs[param.name] = None
         attempts = []
         if keyword_kwargs:
             attempts.append(("keyword", (), keyword_kwargs))
         if len(params) >= 5:
             attempts.append(("positional-5", mesh_inputs, {}))
+        required = [p for p in params if p.default is p.empty]
+        if len(required) > 5:
+            extras = []
+            for param in required[5:]:
+                if param.name in {"mask_ratio", "masking_ratio"}:
+                    extras.append(0.0)
+                elif param.name in {"mask", "masked", "return_mask"}:
+                    extras.append(False)
+                else:
+                    extras.append(None)
+            attempts.append(("positional-fill", (*mesh_inputs, *extras), {}))
         if len(params) >= 1:
             attempts.append(("positional-1", (faces_input,), {}))
 
