@@ -441,7 +441,7 @@ def run_maps_generation(
     completed = subprocess.run(
         command,
         check=False,
-        capture_output=True,
+#        capture_output=True,
         text=True,
         env=env,
     )
