@@ -422,16 +422,13 @@ def meshmae_embedding_pipeline(
                 candidates.append(("encoder.forward_features", encoder.forward_features))
             if hasattr(encoder, "forward"):
                 candidates.append(("encoder.forward", encoder.forward))
-        if hasattr(model, "forward"):
-            candidates.append(("forward", model.forward))
 
         for label, fn in candidates:
             logging.debug("Attempting MeshMAE inference using %s", label)
-            if label == "forward":
-                try:
-                    return call_with_meshmae_inputs(fn, label, mesh_inputs)
-                except TypeError as exc:
-                    logging.debug("Skipping %s due to TypeError: %s", label, exc)
+            try:
+                return call_with_meshmae_inputs(fn, label, mesh_inputs)
+            except TypeError as exc:
+                logging.debug("Skipping %s due to TypeError: %s", label, exc)
             try:
                 return call_with_mesh_inputs(fn, label)
             except TypeError as exc:
@@ -439,7 +436,7 @@ def meshmae_embedding_pipeline(
                 continue
 
         raise AttributeError(
-            "Provided model does not expose forward_encoder/encode/forward_features or compatible forward method."
+            "Provided model does not expose forward_encoder/encode/forward_features or compatible encoder method."
         )
 
     for mesh_path in mesh_paths:
@@ -461,7 +458,12 @@ def meshmae_embedding_pipeline(
         else:
             embedding = latent
         embedding_np = embedding.detach().cpu().numpy().astype(np.float32)
-        embeddings.append(embedding_np.squeeze())
+        embedding_vec = embedding_np.reshape(-1)
+        if embedding_vec.size < 8:
+            raise RuntimeError(
+                "Embedding dimension is too small; check that encoder outputs features and not scalar loss."
+            )
+        embeddings.append(embedding_vec)
         metadata.append({"sample_id": mesh_path.stem, "mesh_path": _metadata_mesh_path(mesh_path)})
 
     stacked = np.vstack(embeddings)

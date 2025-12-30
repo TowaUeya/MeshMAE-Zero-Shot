@@ -37,6 +37,10 @@
    ```
    > `liang3588/MeshMAE` を使う場合は `model.meshmae.Mesh_mae` のようにクラス指定します。\
    > 旧式の `meshmae.models_mae.mae_vit_base_patch16` 形式は、該当モジュールを提供する別実装向けです。
+   >
+   > **注意:** 特徴量抽出では `forward_encoder/encode/forward_features` などのエンコーダ系メソッドのみを利用します。\
+   > `forward` は loss を返す実装が多く、埋め込みとして扱うと次元が潰れてクラスタリングが退化するため対象外です。\
+   > もし抽出ベクトルが極端に小さい（例: 8 次元未満）場合は、モデルの組み合わせや入力形式を確認してください。
 5. クラスタリング + レポート生成
    ```bash
    python -m src.cluster.run_clustering \
