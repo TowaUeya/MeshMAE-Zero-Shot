@@ -13,6 +13,7 @@
     .card { background: #1e293b; border-radius: 12px; padding: 16px; box-shadow: 0 20px 25px -15px rgba(15, 23, 42, 0.5); }
     .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #334155; color: #e2e8f0; font-size: 12px; }
     img { max-width: 100%; border-radius: 12px; margin-bottom: 16px; }
+    iframe { width: 100%; height: 520px; border: none; border-radius: 12px; margin-bottom: 16px; background: #0f172a; }
     footer { margin-top: 48px; font-size: 14px; color: #94a3b8; }
   </style>
 </head>
@@ -39,7 +40,11 @@
       {% for plot in plots %}
       <div class="card">
         <h3>{{ plot.title }}</h3>
+        {% if plot.kind == "html" %}
+        <iframe src="../plots/{{ plot.filename }}" title="{{ plot.title }}"></iframe>
+        {% else %}
         <img src="../plots/{{ plot.filename }}" alt="{{ plot.title }}" />
+        {% endif %}
         <p>{{ plot.caption }}</p>
       </div>
       {% endfor %}

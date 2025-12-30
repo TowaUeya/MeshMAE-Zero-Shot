@@ -10,7 +10,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import matplotlib
 import numpy as np
@@ -63,6 +63,7 @@ class PlotEntry:
     title: str
     filename: str
     caption: str
+    kind: str = "image"
 
 
 def load_config(path: Path) -> PipelineConfig:
@@ -226,7 +227,7 @@ def plot_curves(output_dir: Path, curves: MetricCurves) -> List[PlotEntry]:
         path = plots_dir / "elbow.png"
         plt.savefig(path, bbox_inches="tight")
         plt.close()
-        entries.append(PlotEntry("Elbow curve", path.name, "Within-cluster sum of squares."))
+        entries.append(PlotEntry("Elbow curve", path.name, "Within-cluster sum of squares.", kind="image"))
 
         plt.figure()
         sns.lineplot(x=curves.ks, y=curves.silhouette, marker="o")
@@ -236,7 +237,7 @@ def plot_curves(output_dir: Path, curves: MetricCurves) -> List[PlotEntry]:
         path = plots_dir / "silhouette_vs_k.png"
         plt.savefig(path, bbox_inches="tight")
         plt.close()
-        entries.append(PlotEntry("Silhouette vs k", path.name, "Mean silhouette over all samples."))
+        entries.append(PlotEntry("Silhouette vs k", path.name, "Mean silhouette over all samples.", kind="image"))
 
         plt.figure()
         sns.lineplot(x=curves.ks, y=curves.gap, marker="o")
@@ -247,7 +248,7 @@ def plot_curves(output_dir: Path, curves: MetricCurves) -> List[PlotEntry]:
         path = plots_dir / "gap_stat.png"
         plt.savefig(path, bbox_inches="tight")
         plt.close()
-        entries.append(PlotEntry("Gap statistic", path.name, "Gap statistic with 1-sigma ribbon."))
+        entries.append(PlotEntry("Gap statistic", path.name, "Gap statistic with 1-sigma ribbon.", kind="image"))
 
         plt.figure()
         sns.lineplot(x=curves.ks, y=curves.bic, marker="o")
@@ -257,7 +258,7 @@ def plot_curves(output_dir: Path, curves: MetricCurves) -> List[PlotEntry]:
         path = plots_dir / "bic_gmm.png"
         plt.savefig(path, bbox_inches="tight")
         plt.close()
-        entries.append(PlotEntry("GMM BIC", path.name, "Bayesian Information Criterion of GMM."))
+        entries.append(PlotEntry("GMM BIC", path.name, "Bayesian Information Criterion of GMM.", kind="image"))
 
     return entries
 
@@ -278,7 +279,115 @@ def plot_umap(output_dir: Path, embeddings: np.ndarray, labels: np.ndarray) -> O
     path = plots_dir / "umap.png"
     plt.savefig(path, bbox_inches="tight")
     plt.close()
-    return PlotEntry("UMAP projection", path.name, "2D UMAP projection colored by consensus labels.")
+    return PlotEntry("UMAP projection", path.name, "2D UMAP projection colored by consensus labels.", kind="image")
+
+
+def plot_umap_3d_html(output_dir: Path, embeddings: np.ndarray, labels: np.ndarray) -> Optional[PlotEntry]:
+    if UMAP is None:
+        logging.warning("UMAP not installed; skipping 3D UMAP plot.")
+        return None
+
+    reducer = UMAP(n_neighbors=25, min_dist=0.1, metric="cosine", random_state=42, n_components=3)
+    umap_embeddings = reducer.fit_transform(embeddings)
+    df = pd.DataFrame(
+        {
+            "x": umap_embeddings[:, 0],
+            "y": umap_embeddings[:, 1],
+            "z": umap_embeddings[:, 2],
+            "label": labels.astype(int),
+        }
+    )
+    plots_dir = output_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    path = plots_dir / "umap_3d.html"
+
+    palette = [
+        "#1f77b4",
+        "#ff7f0e",
+        "#2ca02c",
+        "#d62728",
+        "#9467bd",
+        "#8c564b",
+        "#e377c2",
+        "#7f7f7f",
+        "#bcbd22",
+        "#17becf",
+        "#aec7e8",
+        "#ffbb78",
+        "#98df8a",
+        "#ff9896",
+        "#c5b0d5",
+        "#c49c94",
+        "#f7b6d2",
+        "#c7c7c7",
+        "#dbdb8d",
+        "#9edae5",
+    ]
+
+    traces = []
+    for label, group in df.groupby("label"):
+        color = palette[int(label) % len(palette)]
+        traces.append(
+            {
+                "type": "scatter3d",
+                "mode": "markers",
+                "name": f"Cluster {label}",
+                "x": group["x"].tolist(),
+                "y": group["y"].tolist(),
+                "z": group["z"].tolist(),
+                "marker": {"size": 4, "color": color, "opacity": 0.85},
+                "text": [f"cluster={label}"] * len(group),
+                "hovertemplate": "x=%{x:.2f}<br>y=%{y:.2f}<br>z=%{z:.2f}<br>%{text}<extra></extra>",
+            }
+        )
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>3D UMAP projection</title>
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+  <style>
+    body {{
+      margin: 0;
+      background: #0f172a;
+      color: #e2e8f0;
+      font-family: "Inter", "Helvetica", sans-serif;
+    }}
+    #plot {{
+      width: 100vw;
+      height: 100vh;
+    }}
+  </style>
+</head>
+<body>
+  <div id="plot"></div>
+  <script>
+    const data = {json.dumps(traces)};
+    const layout = {{
+      title: "3D UMAP projection (consensus)",
+      paper_bgcolor: "#0f172a",
+      plot_bgcolor: "#0f172a",
+      font: {{color: "#e2e8f0"}},
+      scene: {{
+        xaxis: {{title: "UMAP-1", gridcolor: "#1e293b"}},
+        yaxis: {{title: "UMAP-2", gridcolor: "#1e293b"}},
+        zaxis: {{title: "UMAP-3", gridcolor: "#1e293b"}},
+      }},
+      margin: {{l: 0, r: 0, b: 0, t: 40}},
+    }};
+    Plotly.newPlot("plot", data, layout, {{responsive: true}});
+  </script>
+</body>
+</html>
+"""
+    path.write_text(html, encoding="utf-8")
+    return PlotEntry(
+        "UMAP projection (3D)",
+        path.name,
+        "Interactive 3D UMAP projection colored by consensus labels.",
+        kind="html",
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -350,6 +459,9 @@ def main() -> None:
     umap_entry = plot_umap(output_dir, working_embeddings, consensus_labels)
     if umap_entry:
         plot_entries.append(umap_entry)
+    umap_3d_entry = plot_umap_3d_html(output_dir, working_embeddings, consensus_labels)
+    if umap_3d_entry:
+        plot_entries.append(umap_3d_entry)
 
     cluster_dir = output_dir / "cluster"
     df[["sample_id", "kmeans", "ambiguous"]].to_csv(cluster_dir / "kmeans_assignments.csv", index=False)
