@@ -24,7 +24,6 @@ os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import numpy as np
-import networkx as nx
 import trimesh
 from src.preprocess.clean_mesh import clean_mesh
 
@@ -123,19 +122,24 @@ def _compute_mesh_stats(mesh: trimesh.Trimesh, min_face_area: float) -> dict:
     }
 
 
-def _build_vertex_adjacency(faces: np.ndarray, vertex_count: int) -> list[set[int]]:
-    neighbors = [set() for _ in range(vertex_count)]
+def _build_local_adjacency(faces: np.ndarray, vertex_count: int) -> list[dict[int, set[int]]]:
+    local_adjacency: list[dict[int, set[int]]] = [
+        {} for _ in range(vertex_count)
+    ]
     for tri in faces:
         if len(tri) != 3:
             continue
         a, b, c = tri
-        neighbors[a].update([b, c])
-        neighbors[b].update([a, c])
-        neighbors[c].update([a, b])
-    return neighbors
+        local_adjacency[a].setdefault(b, set()).add(c)
+        local_adjacency[a].setdefault(c, set()).add(b)
+        local_adjacency[b].setdefault(a, set()).add(c)
+        local_adjacency[b].setdefault(c, set()).add(a)
+        local_adjacency[c].setdefault(a, set()).add(b)
+        local_adjacency[c].setdefault(b, set()).add(a)
+    return local_adjacency
 
 
-def _topology_check(mesh: trimesh.Trimesh) -> dict:
+def _topology_check_fast(mesh: trimesh.Trimesh) -> dict:
     """Check if local vertex neighborhoods form cycles.
 
     SubdivNet's MAPS code expects subdivision connectivity. If the induced
@@ -145,36 +149,40 @@ def _topology_check(mesh: trimesh.Trimesh) -> dict:
 
     faces = np.array(mesh.faces)
     vertex_count = len(mesh.vertices)
-    neighbors = _build_vertex_adjacency(faces, vertex_count)
+    local_adjacency = _build_local_adjacency(faces, vertex_count)
     failed_vertices = []
     reasons = []
 
-    for vid, adj in enumerate(neighbors):
+    for vid, adj in enumerate(local_adjacency):
         if len(adj) < 3:
             failed_vertices.append(vid)
             reasons.append("valence<3")
             continue
 
-        graph = nx.Graph()
-        graph.add_nodes_from(adj)
-        for tri in faces:
-            if vid not in tri:
-                continue
-            others = [v for v in tri if v != vid]
-            if len(others) == 2:
-                graph.add_edge(others[0], others[1])
-
-        if graph.number_of_nodes() < 3:
+        degrees = {node: len(neighbors) for node, neighbors in adj.items()}
+        if any(degree != 2 for degree in degrees.values()):
             failed_vertices.append(vid)
-            reasons.append("neighbor_nodes<3")
+            reasons.append("neighbor_degree!=2")
             continue
-        if nx.number_connected_components(graph) > 1:
+
+        nodes = list(adj.keys())
+        visited = set()
+        stack = [nodes[0]]
+        while stack:
+            node = stack.pop()
+            if node in visited:
+                continue
+            visited.add(node)
+            stack.extend(adj[node] - visited)
+        if len(visited) != len(nodes):
             failed_vertices.append(vid)
             reasons.append("neighbor_disconnected")
             continue
-        if not nx.cycle_basis(graph):
+
+        edge_count = sum(degrees.values()) // 2
+        if edge_count != len(nodes):
             failed_vertices.append(vid)
-            reasons.append("cycle_missing")
+            reasons.append("edge_count_mismatch")
 
     return {
         "checked_vertices": int(vertex_count),
@@ -307,28 +315,9 @@ def run_maps(
             return None
         raise ValueError(metadata_payload["error"])
 
-    topology_report = _topology_check(mesh)
-    metadata_payload["topology_check"] = topology_report
-    if topology_report["failed_vertices"] > 0:
-        metadata_payload["error"] = (
-            "Topology check failed: neighbor cycle missing or disconnected "
-            f"({topology_report['failed_vertices']} / {topology_report['checked_vertices']})."
-        )
-        metadata_payload["failure"] = {
-            "type": "TopologyCheckFailed",
-            "message": metadata_payload["error"],
-        }
-        metadata_payload["failed_mesh_path"] = metadata_payload["cleaned_input_path"] or str(input_path)
-        metadata_payload["failed_mesh_relative"] = metadata_payload["cleaned_input_relative"] or input_path.name
-        _write_metadata()
-        if dump_failed_cases is not None:
-            _dump_failed_case(mesh, input_path, dump_failed_cases, metadata_payload)
-        if skip_failed_maps:
-            return None
-        raise RuntimeError(metadata_payload["error"])
-
     attempted_sizes: list[int] = []
     last_error: Optional[Exception] = None
+    topology_needed = False
 
     def _candidate_base_sizes() -> list[int]:
         """Return a descending list of base sizes, always reaching 4 faces."""
@@ -376,6 +365,8 @@ def run_maps(
             return output_path
         except Exception as exc:  # pragma: no cover - SubdivNet failures are external
             last_error = exc
+            if isinstance(exc, IndexError):
+                topology_needed = True
             metadata_payload["error"] = str(exc)
             metadata_payload["attempt_errors"].append(
                 {
@@ -400,6 +391,9 @@ def run_maps(
         "type": type(last_error).__name__ if last_error is not None else "Unknown",
         "message": metadata_payload["error"],
     }
+    if topology_needed:
+        topology_report = _topology_check_fast(mesh)
+        metadata_payload["topology_check"] = topology_report
     _write_metadata()
     if dump_failed_cases is not None:
         _dump_failed_case(mesh, input_path, dump_failed_cases, metadata_payload)
