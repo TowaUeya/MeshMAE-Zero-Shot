@@ -49,6 +49,7 @@ class ExtractionConfig:
     device: str
     num_workers: int
     normalize_embeddings: bool
+    feature_mode: str
     embedding_path: Path
     metadata_path: Path
     pca_embedding_path: Optional[Path]
@@ -89,6 +90,7 @@ def resolve_config(args: argparse.Namespace) -> ExtractionConfig:
     device = args.device or encoder_cfg.get("device", "cuda")
     num_workers = args.num_workers or encoder_cfg.get("num_workers", 8)
     normalize_embeddings = encoder_cfg.get("normalize_embeddings", True)
+    feature_mode = encoder_cfg.get("feature_mode", "paper10")
     embedding_path = Path(args.out or output_cfg.get("embedding_path", "./embeddings/raw_embeddings.npy"))
     metadata_path = Path(args.meta or output_cfg.get("metadata_path", "./embeddings/meta.csv"))
     pca_embedding_path = (
@@ -118,6 +120,7 @@ def resolve_config(args: argparse.Namespace) -> ExtractionConfig:
         device=device,
         num_workers=num_workers,
         normalize_embeddings=normalize_embeddings,
+        feature_mode=feature_mode,
         embedding_path=embedding_path,
         metadata_path=metadata_path,
         pca_embedding_path=pca_embedding_path,
@@ -233,6 +236,12 @@ def geometry_embedding_pipeline(mesh_paths: Iterable[Path]) -> Tuple[np.ndarray,
     return np.vstack(embeddings), metadata
 
 
+def load_factory_target(factory_path: str) -> object:
+    module_name, obj_name = factory_path.rsplit(".", 1)
+    module = importlib.import_module(module_name)
+    return getattr(module, obj_name)
+
+
 def instantiate_model(factory_path: str, factory_kwargs: Optional[Dict[str, object]] = None) -> torch.nn.Module:
     module_name, obj_name = factory_path.rsplit(".", 1)
     module = importlib.import_module(module_name)
@@ -260,6 +269,41 @@ def instantiate_model(factory_path: str, factory_kwargs: Optional[Dict[str, obje
     raise TypeError(f"{factory_path} is not a callable or torch.nn.Module.")
 
 
+def infer_checkpoint_channels(
+    state_dict: Dict[str, torch.Tensor],
+    patch_size: int,
+) -> Optional[Tuple[int, str, int]]:
+    key = "to_patch_embedding.1.weight"
+    weight = state_dict.get(key)
+    if weight is None or weight.ndim != 2:
+        return None
+    in_features = weight.shape[1]
+    if in_features % patch_size != 0:
+        return None
+    channels = int(in_features // patch_size)
+    return channels, key, int(in_features)
+
+
+def maybe_inject_channels(
+    factory_kwargs: Dict[str, object],
+    target: object,
+    channels: Optional[int],
+) -> Tuple[Dict[str, object], bool, Optional[str]]:
+    if channels is None:
+        return factory_kwargs, False, None
+    channel_keys = ("channels", "channel", "in_chans", "in_channels")
+    if any(key in factory_kwargs for key in channel_keys):
+        return factory_kwargs, False, None
+    if not callable(target):
+        return factory_kwargs, False, None
+    signature = inspect.signature(target)
+    for key in channel_keys:
+        if key in signature.parameters:
+            factory_kwargs = {**factory_kwargs, key: channels}
+            return factory_kwargs, True, key
+    return factory_kwargs, False, None
+
+
 def meshmae_embedding_pipeline(
     mesh_paths: Iterable[Path],
     config: ExtractionConfig,
@@ -269,13 +313,35 @@ def meshmae_embedding_pipeline(
     if config.checkpoint is None:
         raise ValueError("A checkpoint path must be provided when using MeshMAE mode.")
 
-    model = instantiate_model(config.model_factory, config.model_factory_kwargs)
+    checkpoint = torch.load(config.checkpoint, map_location="cpu")
+    state_dict = checkpoint.get("model", checkpoint)
+    inferred = infer_checkpoint_channels(state_dict, patch_size=64)
+    if inferred:
+        inferred_channels, inferred_key, inferred_in_features = inferred
+        logging.info(
+            "Checkpoint indicates %d input channels (in_features=%d, patch_size=64 via %s).",
+            inferred_channels,
+            inferred_in_features,
+            inferred_key,
+        )
+    else:
+        inferred_channels = None
+
+    target = load_factory_target(config.model_factory)
+    factory_kwargs = dict(config.model_factory_kwargs)
+    factory_kwargs, injected, injected_key = maybe_inject_channels(factory_kwargs, target, inferred_channels)
+    if injected:
+        logging.info(
+            "Injected %s=%d into model factory kwargs to match checkpoint channels.",
+            injected_key,
+            inferred_channels,
+        )
+
+    model = instantiate_model(config.model_factory, factory_kwargs)
     device = torch.device(config.device if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.eval()
 
-    checkpoint = torch.load(config.checkpoint, map_location=device)
-    state_dict = checkpoint.get("model", checkpoint)
     model_state = model.state_dict()
     mismatched: Dict[str, Tuple[torch.Size, torch.Size]] = {}
     for key, tensor in state_dict.items():
@@ -289,9 +355,17 @@ def meshmae_embedding_pipeline(
             f"{name} (ckpt={ckpt_shape}, model={model_shape})"
             for name, (ckpt_shape, model_shape) in mismatched.items()
         )
+        channel_hint = ""
+        if inferred_channels is not None:
+            channel_hint = (
+                f" Checkpoint expects {inferred_channels} input channels. "
+                "Use MeshMAE paper-style features (feature_mode=paper10) and "
+                f"instantiate the model with channels={inferred_channels}."
+            )
         raise RuntimeError(
             "Checkpoint tensors do not match model architecture. "
-            f"Fix the model factory to align with the checkpoint. Mismatches: {mismatch_details}"
+            f"Fix the model factory to align with the checkpoint. Mismatches: {mismatch_details}."
+            f"{channel_hint}"
         )
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
     if missing or unexpected:
@@ -525,7 +599,7 @@ def meshmae_embedding_pipeline(
 
     for mesh_path in mesh_paths:
         mesh = trimesh.load_mesh(mesh_path, process=True)
-        mesh_inputs = build_meshmae_inputs(mesh, device)
+        mesh_inputs = build_meshmae_inputs(mesh, device, feature_mode=config.feature_mode)
         vertices = torch.tensor(mesh.vertices, dtype=torch.float32, device=device)
         faces = torch.tensor(mesh.faces, dtype=torch.long, device=device)
         with torch.no_grad():
@@ -655,6 +729,7 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     logging.info("Embedding normalization (StandardScaler) enabled: %s", config.normalize_embeddings)
+    logging.info("MeshMAE feature mode: %s", config.feature_mode)
     mesh_paths = list_meshes(config.dataroot, config.mesh_extension, config.only_repaired_maps)
     if not mesh_paths:
         raise FileNotFoundError(f"No meshes with extensions {config.mesh_extension} found in {config.dataroot}")

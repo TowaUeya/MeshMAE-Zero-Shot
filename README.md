@@ -41,6 +41,13 @@
    > **注意:** 特徴量抽出では `forward_encoder/encode/forward_features` などのエンコーダ系メソッドのみを利用します。\
    > `forward` は loss を返す実装が多く、埋め込みとして扱うと次元が潰れてクラスタリングが退化するため対象外です。\
    > もし抽出ベクトルが極端に小さい（例: 8 次元未満）場合は、モデルの組み合わせや入力形式を確認してください。
+   >
+   > **MeshMAE 公式 ckpt の入力について:** 公式 `shapenet_pretrain.pkl` は論文準拠の 10ch 特徴量
+   > （area 1 + interior angles 3 + face normal 3 + face normal⋅vertex normals 3）を想定し、
+   > 1 patch = 64 faces（3 回 subdivide）で学習されています。\
+   > 本リポジトリのデフォルト `feature_mode=paper10` は公式 ckpt に合わせて 10ch を生成します。
+   > 以前の 13ch（center を含む独自特徴）は `feature_mode=legacy13` に切り替え可能ですが、
+   > 公式 ckpt とは互換性がありません。
 5. クラスタリング + レポート生成
    ```bash
    python -m src.cluster.run_clustering \
