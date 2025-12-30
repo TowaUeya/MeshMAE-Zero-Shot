@@ -412,6 +412,8 @@ def meshmae_embedding_pipeline(
             candidates.append(("encode", model.encode))
         if hasattr(model, "forward_features"):
             candidates.append(("forward_features", model.forward_features))
+        if hasattr(model, "forward"):
+            candidates.append(("forward", model.forward))
         if hasattr(model, "encoder"):
             encoder = getattr(model, "encoder")
             if hasattr(encoder, "forward_encoder"):
