@@ -24,5 +24,9 @@ def test_clean_mesh_removes_duplicates_and_small_faces():
     assert report.removed_duplicate_faces == 1
     assert report.removed_small_or_zero_faces == 1
     assert report.removed_duplicate_vertices == 1
+    assert report.removed_unreferenced_vertices >= 0
+    assert report.removed_components == 0
+    assert report.components_before >= 1
+    assert report.components_after >= 1
     assert len(mesh.faces) == 1
     assert len(mesh.vertices) == 3

@@ -176,6 +176,12 @@ SubdivNet の `datagen_maps.py` には `if __name__ == "__main__": MAPS_demo1()`
 
 `make_manifold_and_maps.py` 側は常にこのラッパーを subprocess で呼び出します。前処理中に SubdivNet 側の `__main__` ブロックが実行されることはなくなり、入力/出力を絶対パスで渡すことでパス解決事故を防ぎます。
 
+MAPS が失敗しやすいデータセット向けに、前処理を止めずに続行するオプションも用意しています。
+
+- `--skip_failed_maps`: MAPS 失敗時にそのメッシュだけ失敗扱いで続行（デフォルト挙動）。
+- `--fail_on_maps_error`: MAPS 失敗時に即停止。
+- `--dump_failed_cases <DIR>`: 失敗メッシュと簡易レポート（faces/verts/min_area/components など）を保存。
+
 - 簡略化後のメッシュは `<out>/<stem>.<ext>` に保存されます。500 面以下のメッシュは簡約処理をスキップします。
 - MAPS 出力は `<out>/success/<relative>/<stem>_maps/` に `<stem>_MAPS.<ext>` が生成されます。`<relative>` は入力ルートからの相対パスで、元のフォルダ構造を保ったまま保存されます。失敗した場合はログが `<out>/failed/<relative>/<stem>_maps/error.log` に移動されるため、成功・失敗をディレクトリで分離したうえでトレースを確認できます。
 

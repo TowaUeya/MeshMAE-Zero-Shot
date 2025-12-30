@@ -24,6 +24,7 @@ os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import numpy as np
+import networkx as nx
 import trimesh
 from src.preprocess.clean_mesh import clean_mesh
 
@@ -85,7 +86,118 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default=0.0,
         help="Minimum area threshold when removing tiny faces during cleaning",
     )
+    parser.add_argument(
+        "--skip-failed-maps",
+        action="store_true",
+        help="Do not raise on MAPS failures; write metadata and exit successfully.",
+    )
+    parser.add_argument(
+        "--dump-failed-cases",
+        type=Path,
+        default=None,
+        help="Optional directory to dump failed inputs and simple reports.",
+    )
     return parser.parse_args(argv)
+
+
+def _compute_mesh_stats(mesh: trimesh.Trimesh, min_face_area: float) -> dict:
+    faces = np.array(mesh.faces)
+    vertices = np.array(mesh.vertices)
+    try:
+        areas = mesh.area_faces
+        min_area = float(np.min(areas)) if len(areas) else 0.0
+        degenerate = int(np.count_nonzero(areas <= max(min_face_area, 0.0)))
+    except Exception:
+        min_area = 0.0
+        degenerate = 0
+    try:
+        components = len(mesh.split(only_watertight=False))
+    except Exception:
+        components = 1
+    return {
+        "faces": int(len(faces)),
+        "vertices": int(len(vertices)),
+        "min_face_area": float(min_area),
+        "degenerate_faces": int(degenerate),
+        "components": int(components),
+    }
+
+
+def _build_vertex_adjacency(faces: np.ndarray, vertex_count: int) -> list[set[int]]:
+    neighbors = [set() for _ in range(vertex_count)]
+    for tri in faces:
+        if len(tri) != 3:
+            continue
+        a, b, c = tri
+        neighbors[a].update([b, c])
+        neighbors[b].update([a, c])
+        neighbors[c].update([a, b])
+    return neighbors
+
+
+def _topology_check(mesh: trimesh.Trimesh) -> dict:
+    """Check if local vertex neighborhoods form cycles.
+
+    SubdivNet's MAPS code expects subdivision connectivity. If the induced
+    neighbor graph around a vertex has no cycle, ``cycle_basis`` returns an
+    empty list (hence ``[0]`` would fail). We treat this as a likely MAPS failure.
+    """
+
+    faces = np.array(mesh.faces)
+    vertex_count = len(mesh.vertices)
+    neighbors = _build_vertex_adjacency(faces, vertex_count)
+    failed_vertices = []
+    reasons = []
+
+    for vid, adj in enumerate(neighbors):
+        if len(adj) < 3:
+            failed_vertices.append(vid)
+            reasons.append("valence<3")
+            continue
+
+        graph = nx.Graph()
+        graph.add_nodes_from(adj)
+        for tri in faces:
+            if vid not in tri:
+                continue
+            others = [v for v in tri if v != vid]
+            if len(others) == 2:
+                graph.add_edge(others[0], others[1])
+
+        if graph.number_of_nodes() < 3:
+            failed_vertices.append(vid)
+            reasons.append("neighbor_nodes<3")
+            continue
+        if nx.number_connected_components(graph) > 1:
+            failed_vertices.append(vid)
+            reasons.append("neighbor_disconnected")
+            continue
+        if not nx.cycle_basis(graph):
+            failed_vertices.append(vid)
+            reasons.append("cycle_missing")
+
+    return {
+        "checked_vertices": int(vertex_count),
+        "failed_vertices": int(len(failed_vertices)),
+        "failed_vertex_indices": failed_vertices[:10],
+        "failure_reasons_sample": reasons[:10],
+    }
+
+
+def _dump_failed_case(
+    mesh: trimesh.Trimesh,
+    input_path: Path,
+    dump_dir: Path,
+    report: dict,
+) -> dict:
+    dump_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"{input_path.stem}_failed"
+    mesh_path = dump_dir / f"{stem}.ply"
+    report_path = dump_dir / f"{stem}.json"
+    mesh.export(mesh_path)
+    with report_path.open("w", encoding="utf-8") as handle:
+        json.dump(report, handle, indent=2)
+    return {"mesh_path": str(mesh_path), "report_path": str(report_path)}
 
 
 def run_maps(
@@ -100,7 +212,9 @@ def run_maps(
     metadata: Optional[Path] = None,
     clean_input: bool = False,
     clean_min_face_area: float = 0.0,
-) -> Path:
+    skip_failed_maps: bool = False,
+    dump_failed_cases: Optional[Path] = None,
+) -> Optional[Path]:
     datagen_maps, maps_cls = resolve_subdivnet(subdivnet_root)
 
     input_path = input_path.resolve()
@@ -117,6 +231,7 @@ def run_maps(
         "input_faces": None,
         "input_vertices": None,
         "attempted_base_sizes": [],
+        "attempt_errors": [],
         "chosen_base_size": None,
         "actual_base_size": None,
         "success": False,
@@ -127,12 +242,33 @@ def run_maps(
         "cleaned_input_relative": None,
         "failed_mesh_path": None,
         "failed_mesh_relative": None,
+        "mesh_stats": None,
+        "topology_check": None,
+        "failure": None,
         "error": None,
     }
+
+    def _numpy_to_builtin(value):
+        if isinstance(value, np.integer):
+            return int(value)
+        if isinstance(value, np.floating):
+            return float(value)
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+    def _write_metadata():
+        if metadata is None:
+            return
+        metadata_path = metadata.resolve()
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        with metadata_path.open("w", encoding="utf-8") as handle:
+            json.dump(metadata_payload, handle, indent=2, default=_numpy_to_builtin)
 
     mesh = trimesh.load_mesh(input_path, process=False)
     metadata_payload["input_faces"] = len(mesh.faces)
     metadata_payload["input_vertices"] = len(mesh.vertices)
+    metadata_payload["mesh_stats"] = _compute_mesh_stats(mesh, min_face_area=clean_min_face_area)
 
     if clean_input:
         try:
@@ -146,6 +282,7 @@ def run_maps(
         mesh.export(cleaned_path)
         metadata_payload["cleaned_input_path"] = str(cleaned_path.resolve())
         metadata_payload["cleaned_input_relative"] = cleaned_path.name
+        metadata_payload["mesh_stats"] = _compute_mesh_stats(mesh, min_face_area=clean_min_face_area)
         logging.info(
             "Cleaned MAPS input %s: faces %s -> %s, vertices %s -> %s (removed %s faces, %s vertices)",
             input_path.name,
@@ -164,7 +301,31 @@ def run_maps(
         if metadata_payload["failed_mesh_relative"] is None:
             metadata_payload["failed_mesh_relative"] = input_path.name
         _write_metadata()
+        if dump_failed_cases is not None:
+            _dump_failed_case(mesh, input_path, dump_failed_cases, metadata_payload)
+        if skip_failed_maps:
+            return None
         raise ValueError(metadata_payload["error"])
+
+    topology_report = _topology_check(mesh)
+    metadata_payload["topology_check"] = topology_report
+    if topology_report["failed_vertices"] > 0:
+        metadata_payload["error"] = (
+            "Topology check failed: neighbor cycle missing or disconnected "
+            f"({topology_report['failed_vertices']} / {topology_report['checked_vertices']})."
+        )
+        metadata_payload["failure"] = {
+            "type": "TopologyCheckFailed",
+            "message": metadata_payload["error"],
+        }
+        metadata_payload["failed_mesh_path"] = metadata_payload["cleaned_input_path"] or str(input_path)
+        metadata_payload["failed_mesh_relative"] = metadata_payload["cleaned_input_relative"] or input_path.name
+        _write_metadata()
+        if dump_failed_cases is not None:
+            _dump_failed_case(mesh, input_path, dump_failed_cases, metadata_payload)
+        if skip_failed_maps:
+            return None
+        raise RuntimeError(metadata_payload["error"])
 
     attempted_sizes: list[int] = []
     last_error: Optional[Exception] = None
@@ -189,23 +350,6 @@ def run_maps(
             size = next_size
 
         return sizes
-
-    def _numpy_to_builtin(value):
-        if isinstance(value, np.integer):
-            return int(value)
-        if isinstance(value, np.floating):
-            return float(value)
-        if isinstance(value, np.ndarray):
-            return value.tolist()
-        raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
-
-    def _write_metadata():
-        if metadata is None:
-            return
-        metadata_path = metadata.resolve()
-        metadata_path.parent.mkdir(parents=True, exist_ok=True)
-        with metadata_path.open("w", encoding="utf-8") as handle:
-            json.dump(metadata_payload, handle, indent=2, default=_numpy_to_builtin)
 
     for candidate_size in _candidate_base_sizes():
         attempted_sizes.append(candidate_size)
@@ -233,6 +377,13 @@ def run_maps(
         except Exception as exc:  # pragma: no cover - SubdivNet failures are external
             last_error = exc
             metadata_payload["error"] = str(exc)
+            metadata_payload["attempt_errors"].append(
+                {
+                    "base_size": int(candidate_size),
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+            )
             metadata_payload["failed_mesh_path"] = metadata_payload["cleaned_input_path"] or str(input_path)
             metadata_payload["failed_mesh_relative"] = metadata_payload["cleaned_input_relative"]
             if metadata_payload["failed_mesh_relative"] is None:
@@ -245,7 +396,15 @@ def run_maps(
             continue
 
     metadata_payload["error"] = str(last_error) if last_error is not None else "Unknown MAPS failure"
+    metadata_payload["failure"] = {
+        "type": type(last_error).__name__ if last_error is not None else "Unknown",
+        "message": metadata_payload["error"],
+    }
     _write_metadata()
+    if dump_failed_cases is not None:
+        _dump_failed_case(mesh, input_path, dump_failed_cases, metadata_payload)
+    if skip_failed_maps:
+        return None
     raise RuntimeError(
         "MAPS generation failed after trying base_size candidates "
         f"{attempted_sizes} for {input_path}"
@@ -266,6 +425,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         metadata=args.metadata,
         clean_input=args.clean_input,
         clean_min_face_area=args.clean_min_face_area,
+        skip_failed_maps=args.skip_failed_maps,
+        dump_failed_cases=args.dump_failed_cases,
     )
 
 

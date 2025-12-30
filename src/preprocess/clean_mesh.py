@@ -21,6 +21,10 @@ class CleanReport:
     removed_duplicate_vertices: int
     removed_duplicate_faces: int
     removed_small_or_zero_faces: int
+    removed_unreferenced_vertices: int
+    removed_components: int
+    components_before: int
+    components_after: int
     min_face_area: float
 
     def to_dict(self) -> Dict[str, float]:
@@ -102,6 +106,31 @@ def _remove_small_faces(mesh: trimesh.Trimesh, min_face_area: float) -> int:
     return removed
 
 
+def _remove_unreferenced_vertices(mesh: trimesh.Trimesh) -> int:
+    before = len(mesh.vertices)
+    if hasattr(mesh, "remove_unreferenced_vertices"):
+        _safe_call("remove_unreferenced_vertices", mesh.remove_unreferenced_vertices)
+    elif hasattr(trimesh.repair, "remove_unreferenced_vertices"):
+        _safe_call("trimesh.repair.remove_unreferenced_vertices", lambda: trimesh.repair.remove_unreferenced_vertices(mesh))
+    return before - len(mesh.vertices)
+
+
+def _keep_largest_component(mesh: trimesh.Trimesh) -> int:
+    try:
+        components = mesh.split(only_watertight=False)
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        logging.debug("mesh.split failed during cleaning: %s", exc)
+        return 0
+    if len(components) <= 1:
+        return 0
+    selected = max(components, key=lambda part: len(part.faces))
+    removed_components = len(components) - 1
+    if selected is not mesh:
+        mesh.vertices = np.array(selected.vertices)
+        mesh.faces = np.array(selected.faces)
+    return removed_components
+
+
 def _recompute_normals(mesh: trimesh.Trimesh) -> None:
     if hasattr(mesh, "fix_normals"):
         _safe_call("fix_normals", mesh.fix_normals)
@@ -117,10 +146,22 @@ def clean_mesh(mesh: trimesh.Trimesh, min_face_area: float = 0.0, merge_toleranc
 
     original_vertices = len(mesh.vertices)
     original_faces = len(mesh.faces)
+    components_before = 1
+    try:
+        components_before = len(mesh.split(only_watertight=False))
+    except Exception:  # pragma: no cover - defensive fallback
+        components_before = 1
 
     removed_duplicate_vertices = _remove_duplicate_vertices(mesh, merge_tolerance=merge_tolerance)
     removed_duplicate_faces = _remove_duplicate_faces(mesh)
     removed_small_faces = _remove_small_faces(mesh, min_face_area=min_face_area)
+    removed_unreferenced_vertices = _remove_unreferenced_vertices(mesh)
+    removed_components = _keep_largest_component(mesh)
+    components_after = 1
+    try:
+        components_after = len(mesh.split(only_watertight=False))
+    except Exception:  # pragma: no cover - defensive fallback
+        components_after = 1
     _recompute_normals(mesh)
 
     return CleanReport(
@@ -131,5 +172,9 @@ def clean_mesh(mesh: trimesh.Trimesh, min_face_area: float = 0.0, merge_toleranc
         removed_duplicate_vertices=removed_duplicate_vertices,
         removed_duplicate_faces=removed_duplicate_faces,
         removed_small_or_zero_faces=removed_small_faces,
+        removed_unreferenced_vertices=removed_unreferenced_vertices,
+        removed_components=removed_components,
+        components_before=components_before,
+        components_after=components_after,
         min_face_area=float(min_face_area),
     )

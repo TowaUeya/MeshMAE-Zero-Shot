@@ -13,8 +13,20 @@ from src.preprocess import run_subdivnet_maps
 
 class DummyMesh:
     def __init__(self, face_count: int):
-        self.vertices = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
-        self.faces = [[0, 1, 2]] * face_count
+        self.vertices = [
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
+        ]
+        self.faces = [
+            (0, 1, 2),
+            (0, 1, 3),
+            (0, 2, 3),
+            (1, 2, 3),
+        ]
+        if face_count > 4:
+            self.faces.extend([self.faces[0]] * (face_count - 4))
 
 
 class SuccessfulMaps:
@@ -76,7 +88,7 @@ def test_run_maps_writes_metadata_on_success(tmp_path, monkeypatch):
 
     metadata = json.loads(metadata_path.read_text())
     assert metadata["input_faces"] == 6
-    assert metadata["input_vertices"] == 3
+    assert metadata["input_vertices"] == 4
     assert metadata["attempted_base_sizes"] == [6]
     assert metadata["chosen_base_size"] == 6
     assert metadata["actual_base_size"] == 7
@@ -101,18 +113,19 @@ def test_run_maps_writes_metadata_on_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(run_subdivnet_maps.trimesh, "load_mesh", lambda *args, **kwargs: dummy_mesh)
     monkeypatch.setattr(run_subdivnet_maps, "resolve_subdivnet", lambda root: (object(), FailingMaps))
 
-    with pytest.raises(RuntimeError):
-        run_subdivnet_maps.run_maps(
-            subdivnet_root=tmp_path / "subdivnet",
-            input_path=input_path,
-            out_dir=output_dir,
-            output_path=None,
-            base_size=6,
-            depth=2,
-            max_base_size=None,
-            verbose=False,
+    result = run_subdivnet_maps.run_maps(
+        subdivnet_root=tmp_path / "subdivnet",
+        input_path=input_path,
+        out_dir=output_dir,
+        output_path=None,
+        base_size=6,
+        depth=2,
+        max_base_size=None,
+        verbose=False,
         metadata=metadata_path,
+        skip_failed_maps=True,
     )
+    assert result is None
 
     metadata = json.loads(metadata_path.read_text())
     assert metadata["attempted_base_sizes"] == [5, 4]
@@ -133,12 +146,16 @@ def test_run_maps_cleans_mesh_and_records_metadata(tmp_path, monkeypatch):
         (0.0, 0.0, 0.0),
         (1.0, 0.0, 0.0),
         (0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0),
         (0.0, 0.0, 0.0),
     ]
     faces = [
         (0, 1, 2),
+        (0, 1, 3),
+        (0, 2, 3),
+        (1, 2, 3),
         (0, 1, 2),  # duplicate
-        (0, 3, 2),  # zero-area because 0 == 3
+        (0, 4, 2),  # zero-area because 0 == 4
     ]
     real_mesh = run_subdivnet_maps.trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
     input_path.write_text("mesh")
@@ -164,7 +181,7 @@ def test_run_maps_cleans_mesh_and_records_metadata(tmp_path, monkeypatch):
     assert metadata["cleaning"]["removed_duplicate_vertices"] == 1
     assert metadata["cleaning"]["removed_duplicate_faces"] == 1
     assert metadata["cleaning"]["removed_small_or_zero_faces"] == 1
-    assert metadata["cleaning"]["cleaned_faces"] == 1
+    assert metadata["cleaning"]["cleaned_faces"] == 4
     assert metadata["cleaned_input_relative"] == f"{input_path.stem}_cleaned{input_path.suffix}"
     cleaned_mesh_path = output_dir / metadata["cleaned_input_relative"]
     assert cleaned_mesh_path.exists()
