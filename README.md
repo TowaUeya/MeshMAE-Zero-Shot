@@ -435,6 +435,8 @@ python -m src.cluster.run_clustering \
 - `out/plots/*.png`（エルボー法、シルエット、ギャップ統計、GMM BIC、UMAP など）
 - `out/report.html`（テンプレートは `src/cluster/templates/report.html`）
 
+**診断ログ**: K-Means/HDBSCAN に渡す特徴量の平均・分散・ユニーク数をログ出力します。特徴量が全ゼロ・全同一・次元 0 の場合は例外で停止し、埋め込み抽出の設定や入力メッシュを見直してください。HDBSCAN は `min_cluster_size`/`min_samples`/`metric` をログし、スケール不整合が疑われる場合は追加の標準化を行います。ノイズ率が高いときはパラメータを緩和して再実行します。
+
 #### 自動K推定の仕組み（概要）
 
 `src/cluster/auto_k.py` では複数の評価指標（エルボー法、シルエット、ギャップ統計、GMM BIC など）を計算し、それぞれのスコアを重み付け平均して `k*` を推定します。`configs/cluster.yaml` の `auto_k.weights` を調整することで、どの指標を重視するかを制御できます。
@@ -458,6 +460,8 @@ python -m src.cluster.plot_dendrogram \
 - `out/cluster/hier_vs_kmeans_metrics.json`: K-Means と階層クラスタリングの一致度メトリクス（`k_star`, `ARI_hier_vs_kmeans`, `VI_hier_vs_kmeans`）。
 
 距離閾値でカットしたい場合は `--distance-threshold`、既存の K* とは異なるクラスタ数で比較したい場合は `--max-clusters` を指定してください。高さカットの目安として、デンドログラムの“U字”の高さ（コーフェネティック距離）を参照すると理解しやすくなります。
+
+**注意**: 階層クラスタリングでは特徴量の多様性（平均/分散/ユニーク数）と距離統計（最小・最大・平均）をログ出力します。距離が全て 0、もしくは K-Means が単一クラスタに潰れている場合は、まず埋め込み生成や K-Means の退化を解消してから再評価してください。
 
 **大量の葉ラベル対策**: サンプル数が多いときは DPI を上げてもラベルが読めないため、`--label-mode` で挙動を切り替えてください。既定の `auto` は葉数が閾値を超えると `truncate` または `none` に切り替えます。`--format pdf/svg` のベクタ出力も推奨です。
 
