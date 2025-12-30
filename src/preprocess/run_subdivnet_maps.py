@@ -340,16 +340,26 @@ def run_maps(
 
         return sizes
 
-    for candidate_size in _candidate_base_sizes():
+    candidate_sizes = _candidate_base_sizes()
+    if verbose:
+        logging.info("MAPS base_size candidates: %s", candidate_sizes)
+
+    for candidate_size in candidate_sizes:
+        if verbose:
+            logging.info("MAPS attempt start: base_size=%s for %s", candidate_size, input_path.name)
         attempted_sizes.append(candidate_size)
         metadata_payload["attempted_base_sizes"] = attempted_sizes.copy()
         try:
+            if verbose:
+                logging.info("MAPS build start: base_size=%s for %s", candidate_size, input_path.name)
             maps = maps_cls(
                 mesh.vertices,
                 mesh.faces,
                 base_size=candidate_size,
                 verbose=verbose,
             )
+            if verbose:
+                logging.info("MAPS build success: base_size=%s for %s", candidate_size, input_path.name)
             actual_base_size = getattr(maps, "base_size", candidate_size)
             if max_base_size is not None and actual_base_size > max_base_size:
                 raise ValueError(
@@ -367,6 +377,12 @@ def run_maps(
             last_error = exc
             if isinstance(exc, IndexError):
                 topology_needed = True
+            logging.info(
+                "MAPS attempt failed for base_size=%s on %s: %s",
+                candidate_size,
+                input_path.name,
+                exc,
+            )
             metadata_payload["error"] = str(exc)
             metadata_payload["attempt_errors"].append(
                 {
@@ -392,7 +408,11 @@ def run_maps(
         "message": metadata_payload["error"],
     }
     if topology_needed:
+        if verbose:
+            logging.info("MAPS topology check start for %s", input_path.name)
         topology_report = _topology_check_fast(mesh)
+        if verbose:
+            logging.info("MAPS topology check complete for %s", input_path.name)
         metadata_payload["topology_check"] = topology_report
     _write_metadata()
     if dump_failed_cases is not None:
