@@ -17,6 +17,7 @@ from scipy.cluster.hierarchy import (
     linkage,
     optimal_leaf_ordering,
 )
+from scipy.spatial.distance import pdist
 from sklearn.metrics import adjusted_rand_score
 from sklearn.metrics.cluster import contingency_matrix
 
@@ -264,6 +265,40 @@ def run_hierarchical_clustering(
     return ordered, labels
 
 
+def log_embedding_diversity(embeddings: np.ndarray, label: str) -> None:
+    means = embeddings.mean(axis=0)
+    variances = embeddings.var(axis=0)
+    unique_counts = np.apply_along_axis(lambda col: np.unique(col).size, 0, embeddings)
+    stats = pd.DataFrame({"mean": means, "variance": variances, "unique": unique_counts})
+    logging.info("%s feature stats (mean/variance/unique per dimension):\n%s", label, stats.to_string(index=True))
+
+    distances = pdist(embeddings, metric="euclidean")
+    if distances.size == 0:
+        raise ValueError(f"{label} distance matrix is empty; need at least 2 samples.")
+    logging.info(
+        "%s distance stats (euclidean): min=%.6f max=%.6f mean=%.6f",
+        label,
+        float(distances.min()),
+        float(distances.max()),
+        float(distances.mean()),
+    )
+    if np.allclose(distances, 0):
+        raise ValueError(f"{label} distances are all zero; embeddings appear degenerate.")
+
+
+def ensure_non_degenerate_embeddings(embeddings: np.ndarray, label: str) -> None:
+    if embeddings.ndim != 2:
+        raise ValueError(f"{label} embeddings must be a 2D array, got shape {embeddings.shape}.")
+    if embeddings.shape[0] == 0:
+        raise ValueError(f"{label} embeddings have zero samples.")
+    if embeddings.shape[1] == 0:
+        raise ValueError(f"{label} embeddings have zero feature dimensions.")
+    if np.allclose(embeddings, 0):
+        raise ValueError(f"{label} embeddings are all zeros. Check embedding extraction outputs.")
+    if np.allclose(embeddings, embeddings[0]):
+        raise ValueError(f"{label} embeddings are identical across samples. Check embedding extraction outputs.")
+
+
 def plot_and_save_dendrogram(
     linkage_matrix: np.ndarray,
     leaf_labels: Optional[list[str]],
@@ -318,6 +353,8 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
     embeddings = load_embeddings(args.emb)
+    ensure_non_degenerate_embeddings(embeddings, "Hierarchical input")
+    log_embedding_diversity(embeddings, "Hierarchical input")
     kmeans_df = pd.read_csv(args.kmeans)
     kmeans_labels = resolve_kmeans_labels(kmeans_df, args.label_column)
 
@@ -327,7 +364,14 @@ def main() -> None:
             f"({len(kmeans_labels)} vs {embeddings.shape[0]})."
         )
 
-    max_clusters = args.max_clusters or int(len(np.unique(kmeans_labels)))
+    unique_kmeans = int(len(np.unique(kmeans_labels)))
+    logging.info("K-Means label diversity: unique_clusters=%d", unique_kmeans)
+    if unique_kmeans <= 1 and args.max_clusters is None and args.distance_threshold is None:
+        raise ValueError(
+            "K-Means assignments contain a single cluster; fix K-Means/embeddings first or "
+            "pass --max-clusters/--distance-threshold to override."
+        )
+    max_clusters = args.max_clusters or unique_kmeans
     if max_clusters <= 0:
         raise ValueError("Number of clusters must be positive.")
 
