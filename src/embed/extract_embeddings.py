@@ -468,6 +468,19 @@ def meshmae_embedding_pipeline(
     return stacked, metadata
 
 
+def ensure_non_degenerate_embeddings(embeddings: np.ndarray, label: str) -> None:
+    if embeddings.ndim != 2:
+        raise ValueError(f"{label} embeddings must be a 2D array, got shape {embeddings.shape}.")
+    if embeddings.shape[0] == 0:
+        raise ValueError(f"{label} embeddings have zero samples.")
+    if embeddings.shape[1] == 0:
+        raise ValueError(f"{label} embeddings have zero feature dimensions.")
+    if np.allclose(embeddings, 0):
+        raise ValueError(f"{label} embeddings are all zeros. Check MeshMAE/geometry feature extraction.")
+    if np.allclose(embeddings, embeddings[0]):
+        raise ValueError(f"{label} embeddings are identical across samples. Check MeshMAE/geometry feature extraction.")
+
+
 def maybe_normalize(embeddings: np.ndarray, normalize: bool) -> np.ndarray:
     if not normalize:
         return embeddings
@@ -551,6 +564,7 @@ def main() -> None:
         config.normalize_embeddings = False
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    logging.info("Embedding normalization (StandardScaler) enabled: %s", config.normalize_embeddings)
     mesh_paths = list_meshes(config.dataroot, config.mesh_extension, config.only_repaired_maps)
     if not mesh_paths:
         raise FileNotFoundError(f"No meshes with extensions {config.mesh_extension} found in {config.dataroot}")
@@ -580,6 +594,7 @@ def main() -> None:
         embeddings, metadata = geometry_embedding_pipeline(mesh_paths)
 
     embeddings = maybe_normalize(embeddings, config.normalize_embeddings)
+    ensure_non_degenerate_embeddings(embeddings, "Extracted")
     write_outputs(embeddings, metadata, config)
     logging.info("Saved embeddings to %s", config.embedding_path)
     logging.info("Saved metadata to %s", config.metadata_path)

@@ -131,17 +131,67 @@ def run_kmeans(embeddings: np.ndarray, n_clusters: int, init: str, n_init: int) 
     return labels, min_dist
 
 
+def log_feature_statistics(embeddings: np.ndarray, label: str) -> None:
+    means = embeddings.mean(axis=0)
+    variances = embeddings.var(axis=0)
+    unique_counts = np.apply_along_axis(lambda col: np.unique(col).size, 0, embeddings)
+    stats_df = pd.DataFrame(
+        {
+            "mean": means,
+            "variance": variances,
+            "unique": unique_counts,
+        }
+    )
+    logging.info("%s feature stats (mean/variance/unique per dimension):\n%s", label, stats_df.to_string(index=True))
+
+
+def ensure_non_degenerate_embeddings(embeddings: np.ndarray, label: str) -> None:
+    if embeddings.ndim != 2:
+        raise ValueError(f"{label} embeddings must be a 2D array, got shape {embeddings.shape}.")
+    if embeddings.shape[1] == 0:
+        raise ValueError(f"{label} embeddings have zero feature dimensions.")
+    if embeddings.shape[0] == 0:
+        raise ValueError(f"{label} embeddings have zero samples.")
+    if np.allclose(embeddings, 0):
+        raise ValueError(f"{label} embeddings are all zeros. Check embedding extraction outputs.")
+    if np.allclose(embeddings, embeddings[0]):
+        raise ValueError(f"{label} embeddings are identical across samples. Check embedding extraction outputs.")
+
+
 def run_hdbscan(embeddings: np.ndarray, cfg: Dict) -> hdbscan.HDBSCAN:
     params = {
         "min_cluster_size": cfg.get("min_cluster_size", 8),
         "min_samples": cfg.get("min_samples"),
         "cluster_selection_method": cfg.get("cluster_selection_method", "eom"),
         "allow_single_cluster": cfg.get("allow_single_cluster", False),
+        "metric": cfg.get("metric", "euclidean"),
         "prediction_data": True,
     }
     model = hdbscan.HDBSCAN(**params)
     model.fit(embeddings)
     return model
+
+
+def is_scale_inappropriate(embeddings: np.ndarray, ratio_threshold: float = 100.0) -> bool:
+    stds = embeddings.std(axis=0)
+    nonzero = stds[stds > 0]
+    if nonzero.size == 0:
+        return False
+    return (nonzero.max() / nonzero.min()) > ratio_threshold
+
+
+def relax_hdbscan_params(cfg: Dict) -> Dict:
+    relaxed = dict(cfg)
+    min_cluster_size = relaxed.get("min_cluster_size", 8)
+    if min_cluster_size is None:
+        min_cluster_size = 8
+    relaxed["min_cluster_size"] = max(2, int(min_cluster_size * 0.5))
+    min_samples = relaxed.get("min_samples")
+    if min_samples is None:
+        relaxed["min_samples"] = max(1, int(relaxed["min_cluster_size"] / 2))
+    else:
+        relaxed["min_samples"] = max(1, int(min_samples * 0.5))
+    return relaxed
 
 
 def compute_ambiguity(
@@ -405,6 +455,7 @@ def main() -> None:
 
     cfg = load_config(args.config)
     embeddings = load_embeddings(args.emb)
+    logging.info("Preprocessing config: scale=%s, pca_components=%s, whiten=%s", cfg.scale, cfg.pca_components, cfg.whiten)
     if args.meta and args.meta.exists():
         metadata = pd.read_csv(args.meta)
     else:
@@ -415,6 +466,8 @@ def main() -> None:
     scaled, _ = apply_scaling(embeddings, cfg.scale)
     pca_embeddings = apply_pca(scaled, cfg.pca_components, cfg.whiten)
     working_embeddings = pca_embeddings if pca_embeddings is not None else scaled
+    ensure_non_degenerate_embeddings(working_embeddings, "KMeans input")
+    log_feature_statistics(working_embeddings, "KMeans input")
 
     auto_k_result = auto_select_k(
         working_embeddings,
@@ -426,8 +479,34 @@ def main() -> None:
     logging.info("Consensus k determined as %d", auto_k_result.consensus_k)
 
     kmeans_labels, kmeans_distances = run_kmeans(working_embeddings, auto_k_result.consensus_k, cfg.kmeans_init, cfg.kmeans_n_init)
-    hdbscan_model = run_hdbscan(working_embeddings, cfg.hdbscan_cfg)
+    hdbscan_embeddings = working_embeddings
+    additional_hdbscan_scaling = False
+    if not cfg.scale and is_scale_inappropriate(working_embeddings):
+        logging.warning(
+            "HDBSCAN features show wide scale variance; applying StandardScaler before HDBSCAN."
+        )
+        hdbscan_embeddings, _ = apply_scaling(working_embeddings, True)
+        additional_hdbscan_scaling = True
+    hdbscan_cfg = cfg.hdbscan_cfg
+    logging.info(
+        "HDBSCAN config: min_cluster_size=%s, min_samples=%s, metric=%s, preprocessing_scale=%s, extra_hdbscan_scale=%s",
+        hdbscan_cfg.get("min_cluster_size", 8),
+        hdbscan_cfg.get("min_samples"),
+        hdbscan_cfg.get("metric", "euclidean"),
+        cfg.scale,
+        additional_hdbscan_scaling,
+    )
+    hdbscan_model = run_hdbscan(hdbscan_embeddings, hdbscan_cfg)
     hdbscan_labels = hdbscan_model.labels_
+    noise_rate = float(np.mean(hdbscan_labels == -1))
+    logging.info("HDBSCAN noise (-1) rate: %.2f", noise_rate)
+    if noise_rate > 0.5:
+        relaxed_cfg = relax_hdbscan_params(hdbscan_cfg)
+        logging.warning("High HDBSCAN noise rate detected; relaxing params to %s", relaxed_cfg)
+        hdbscan_model = run_hdbscan(hdbscan_embeddings, relaxed_cfg)
+        hdbscan_labels = hdbscan_model.labels_
+        noise_rate = float(np.mean(hdbscan_labels == -1))
+        logging.info("HDBSCAN noise (-1) rate after relaxation: %.2f", noise_rate)
 
     gmm = GaussianMixture(n_components=auto_k_result.consensus_k, covariance_type=cfg.covariance_type, random_state=42)
     gmm.fit(working_embeddings)
