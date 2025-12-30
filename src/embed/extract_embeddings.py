@@ -54,7 +54,11 @@ class ExtractionConfig:
     pca_embedding_path: Optional[Path]
     umap_embedding_path: Optional[Path]
     model_factory: Optional[str]
+    model_factory_kwargs: Dict[str, object]
     force_geometry: bool
+    expected_embedding_dim: Optional[int]
+    min_unique_ratio: float
+    min_feature_std: float
 
 
 def module_available(module_name: str) -> bool:
@@ -98,7 +102,11 @@ def resolve_config(args: argparse.Namespace) -> ExtractionConfig:
         else (Path(output_cfg["umap_embedding_path"]) if output_cfg.get("umap_embedding_path") else None)
     )
     model_factory = args.model_factory or encoder_cfg.get("model_factory")
+    model_factory_kwargs = encoder_cfg.get("model_factory_kwargs", {})
     force_geometry = args.force_geometry
+    expected_embedding_dim = encoder_cfg.get("embedding_dim")
+    min_unique_ratio = float(encoder_cfg.get("min_unique_ratio", 0.1))
+    min_feature_std = float(encoder_cfg.get("min_feature_std", 1e-3))
 
     return ExtractionConfig(
         dataroot=dataroot,
@@ -115,7 +123,11 @@ def resolve_config(args: argparse.Namespace) -> ExtractionConfig:
         pca_embedding_path=pca_embedding_path,
         umap_embedding_path=umap_embedding_path,
         model_factory=model_factory,
+        model_factory_kwargs=model_factory_kwargs,
         force_geometry=force_geometry,
+        expected_embedding_dim=expected_embedding_dim,
+        min_unique_ratio=min_unique_ratio,
+        min_feature_std=min_feature_std,
     )
 
 
@@ -221,16 +233,30 @@ def geometry_embedding_pipeline(mesh_paths: Iterable[Path]) -> Tuple[np.ndarray,
     return np.vstack(embeddings), metadata
 
 
-def instantiate_model(factory_path: str) -> torch.nn.Module:
+def instantiate_model(factory_path: str, factory_kwargs: Optional[Dict[str, object]] = None) -> torch.nn.Module:
     module_name, obj_name = factory_path.rsplit(".", 1)
     module = importlib.import_module(module_name)
     target = getattr(module, obj_name)
+    factory_kwargs = factory_kwargs or {}
     if isinstance(target, torch.nn.Module):
         return target
     if isinstance(target, type) and issubclass(target, torch.nn.Module):
-        return target()
+        signature = inspect.signature(target)
+        required = [
+            param
+            for name, param in signature.parameters.items()
+            if name != "self" and param.default is param.empty
+        ]
+        if required and not factory_kwargs:
+            required_names = ", ".join(param.name for param in required)
+            raise ValueError(
+                "Model factory must be a callable that fully specifies MeshMAE initialization. "
+                f"Class {factory_path} requires parameters ({required_names}). "
+                "Provide a factory function or model_factory_kwargs in the YAML config."
+            )
+        return target(**factory_kwargs)
     if callable(target):
-        return target()
+        return target(**factory_kwargs) if factory_kwargs else target()
     raise TypeError(f"{factory_path} is not a callable or torch.nn.Module.")
 
 
@@ -243,7 +269,7 @@ def meshmae_embedding_pipeline(
     if config.checkpoint is None:
         raise ValueError("A checkpoint path must be provided when using MeshMAE mode.")
 
-    model = instantiate_model(config.model_factory)
+    model = instantiate_model(config.model_factory, config.model_factory_kwargs)
     device = torch.device(config.device if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.eval()
@@ -251,7 +277,6 @@ def meshmae_embedding_pipeline(
     checkpoint = torch.load(config.checkpoint, map_location=device)
     state_dict = checkpoint.get("model", checkpoint)
     model_state = model.state_dict()
-    filtered_state: Dict[str, torch.Tensor] = {}
     mismatched: Dict[str, Tuple[torch.Size, torch.Size]] = {}
     for key, tensor in state_dict.items():
         if key not in model_state:
@@ -259,21 +284,21 @@ def meshmae_embedding_pipeline(
         if model_state[key].shape != tensor.shape:
             mismatched[key] = (tensor.shape, model_state[key].shape)
             continue
-        filtered_state[key] = tensor
     if mismatched:
-        logging.warning(
-            "Skipping %d checkpoint tensors due to shape mismatch: %s",
-            len(mismatched),
-            ", ".join(
-                f"{name} (ckpt={ckpt_shape}, model={model_shape})"
-                for name, (ckpt_shape, model_shape) in mismatched.items()
-            ),
+        mismatch_details = ", ".join(
+            f"{name} (ckpt={ckpt_shape}, model={model_shape})"
+            for name, (ckpt_shape, model_shape) in mismatched.items()
         )
-    missing, unexpected = model.load_state_dict(filtered_state, strict=False)
-    if missing:
-        logging.warning("Missing keys when loading checkpoint: %s", missing)
-    if unexpected:
-        logging.warning("Unexpected keys when loading checkpoint: %s", unexpected)
+        raise RuntimeError(
+            "Checkpoint tensors do not match model architecture. "
+            f"Fix the model factory to align with the checkpoint. Mismatches: {mismatch_details}"
+        )
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    if missing or unexpected:
+        raise RuntimeError(
+            "Checkpoint loading did not match the model state dict. "
+            f"Missing keys: {missing}. Unexpected keys: {unexpected}."
+        )
 
     embeddings: List[np.ndarray] = []
     metadata: List[Dict[str, str]] = []
@@ -514,17 +539,36 @@ def meshmae_embedding_pipeline(
     return stacked, metadata
 
 
-def ensure_non_degenerate_embeddings(embeddings: np.ndarray, label: str) -> None:
+def ensure_non_degenerate_embeddings(embeddings: np.ndarray, label: str, config: ExtractionConfig) -> None:
     if embeddings.ndim != 2:
         raise ValueError(f"{label} embeddings must be a 2D array, got shape {embeddings.shape}.")
     if embeddings.shape[0] == 0:
         raise ValueError(f"{label} embeddings have zero samples.")
     if embeddings.shape[1] == 0:
         raise ValueError(f"{label} embeddings have zero feature dimensions.")
+    if config.expected_embedding_dim is not None and embeddings.shape[1] != config.expected_embedding_dim:
+        raise ValueError(
+            f"{label} embeddings have dimension {embeddings.shape[1]}, expected {config.expected_embedding_dim}."
+        )
     if np.allclose(embeddings, 0):
         raise ValueError(f"{label} embeddings are all zeros. Check MeshMAE/geometry feature extraction.")
     if np.allclose(embeddings, embeddings[0]):
         raise ValueError(f"{label} embeddings are identical across samples. Check MeshMAE/geometry feature extraction.")
+    rounded = np.round(embeddings, decimals=4)
+    unique_rows = np.unique(rounded, axis=0).shape[0]
+    unique_ratio = unique_rows / embeddings.shape[0]
+    if unique_ratio < config.min_unique_ratio:
+        raise ValueError(
+            f"{label} embeddings are nearly identical across samples "
+            f"(unique ratio={unique_ratio:.3f} < {config.min_unique_ratio:.3f})."
+        )
+    feature_std = np.std(embeddings, axis=0)
+    mean_feature_std = float(np.mean(feature_std))
+    if mean_feature_std < config.min_feature_std:
+        raise ValueError(
+            f"{label} embeddings have collapsed variance "
+            f"(mean feature std={mean_feature_std:.6f} < {config.min_feature_std:.6f})."
+        )
 
 
 def maybe_normalize(embeddings: np.ndarray, normalize: bool) -> np.ndarray:
@@ -640,7 +684,7 @@ def main() -> None:
         embeddings, metadata = geometry_embedding_pipeline(mesh_paths)
 
     embeddings = maybe_normalize(embeddings, config.normalize_embeddings)
-    ensure_non_degenerate_embeddings(embeddings, "Extracted")
+    ensure_non_degenerate_embeddings(embeddings, "Extracted", config)
     write_outputs(embeddings, metadata, config)
     logging.info("Saved embeddings to %s", config.embedding_path)
     logging.info("Saved metadata to %s", config.metadata_path)
