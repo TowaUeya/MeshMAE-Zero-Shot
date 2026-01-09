@@ -65,11 +65,10 @@
      --embeddings embeddings/raw_embeddings.npy \
      --embeddings-no-normalize embeddings/raw_embeddings_no_norm.npy \
      --meta embeddings/meta.csv \
-     --labels datasets/fossils_labels.csv \
      --label-column label
    ```
    > `--data` を渡すと `feats`/`centers` の shape と統計（mean/std/min/max/nans/infs）を出力します。\
-   > 線形プローブは `--embeddings` と `--meta`/`--labels` が必須です。\
+   > 線形プローブは `--embeddings` と `--meta` が必須です。\
    > `--embeddings-no-normalize` を指定すると正規化なしの精度も同時に算出します。
 6. クラスタリング + レポート生成
    ```bash

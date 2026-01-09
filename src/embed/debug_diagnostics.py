@@ -55,7 +55,7 @@ def parse_args() -> argparse.Namespace:
         help="Embeddings .npy extracted with --no-normalize for comparison.",
     )
     parser.add_argument("--meta", type=Path, default=None, help="Metadata CSV with sample_id order.")
-    parser.add_argument("--labels", type=Path, default=None, help="CSV containing labels.")
+    parser.add_argument("--labels", type=Path, default=None, help="(Deprecated) CSV containing labels.")
     parser.add_argument("--id-column", type=str, default="sample_id", help="Column name for sample IDs.")
     parser.add_argument("--label-column", type=str, default="label", help="Column name for labels.")
     parser.add_argument("--test-size", type=float, default=0.2, help="Test size for linear probe split.")
@@ -169,26 +169,17 @@ def collect_mesh_input_stats(
 
 def load_probe_labels(
     meta_path: Path,
-    labels_path: Path,
     id_column: str,
     label_column: str,
 ) -> Tuple[np.ndarray, np.ndarray]:
     meta_df = pd.read_csv(meta_path)
-    labels_df = pd.read_csv(labels_path)
     if id_column not in meta_df.columns:
         raise ValueError(f"Metadata CSV must include '{id_column}'.")
-    if id_column not in labels_df.columns:
-        raise ValueError(f"Labels CSV must include '{id_column}'.")
-    if label_column not in labels_df.columns:
-        raise ValueError(f"Labels CSV must include '{label_column}'.")
+    if label_column not in meta_df.columns:
+        raise ValueError(f"Metadata CSV must include '{label_column}'.")
 
-    label_map = dict(zip(labels_df[id_column].astype(str), labels_df[label_column]))
     sample_ids = meta_df[id_column].astype(str).to_numpy()
-    labels = np.array([label_map.get(sample_id) for sample_id in sample_ids], dtype=object)
-    if np.any(pd.isna(labels)):
-        missing = sample_ids[pd.isna(labels)]
-        missing_preview = ", ".join(missing[:5])
-        raise ValueError(f"Missing labels for {len(missing)} samples (e.g. {missing_preview}).")
+    labels = meta_df[label_column].to_numpy()
     encoder = LabelEncoder()
     encoded = encoder.fit_transform(labels.astype(str))
     return sample_ids, encoded
@@ -218,11 +209,13 @@ def run_linear_probe(
 def maybe_run_linear_probe(args: argparse.Namespace) -> Optional[Dict[str, object]]:
     if args.embeddings is None:
         return None
-    if args.meta is None or args.labels is None:
-        raise ValueError("--meta and --labels are required when running linear probe diagnostics.")
+    if args.meta is None:
+        raise ValueError("--meta is required when running linear probe diagnostics.")
+    if args.labels is not None:
+        logging.warning("--labels is deprecated and ignored; labels are read from --meta only.")
 
     embeddings = np.load(args.embeddings)
-    _, labels = load_probe_labels(args.meta, args.labels, args.id_column, args.label_column)
+    _, labels = load_probe_labels(args.meta, args.id_column, args.label_column)
     if embeddings.shape[0] != labels.shape[0]:
         raise ValueError(
             f"Embeddings count ({embeddings.shape[0]}) does not match label count ({labels.shape[0]})."
