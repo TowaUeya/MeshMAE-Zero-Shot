@@ -57,7 +57,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--meta", type=Path, default=None, help="Metadata CSV with sample_id order.")
     parser.add_argument("--labels", type=Path, default=None, help="(Deprecated) CSV containing labels.")
     parser.add_argument("--id-column", type=str, default="sample_id", help="Column name for sample IDs.")
-    parser.add_argument("--label-column", type=str, default="label", help="Column name for labels.")
+    parser.add_argument("--label-column", type=str, default="mesh_path", help="Column name for labels.")
     parser.add_argument("--test-size", type=float, default=0.2, help="Test size for linear probe split.")
     parser.add_argument("--random-state", type=int, default=42, help="Random seed for linear probe split.")
     return parser.parse_args()
@@ -179,10 +179,20 @@ def load_probe_labels(
         raise ValueError(f"Metadata CSV must include '{label_column}'.")
 
     sample_ids = meta_df[id_column].astype(str).to_numpy()
-    labels = meta_df[label_column].to_numpy()
+    if label_column == "mesh_path":
+        labels = meta_df[label_column].astype(str).map(_label_from_path).to_numpy()
+    else:
+        labels = meta_df[label_column].to_numpy()
     encoder = LabelEncoder()
     encoded = encoder.fit_transform(labels.astype(str))
     return sample_ids, encoded
+
+
+def _label_from_path(path_str: str) -> str:
+    path = Path(path_str)
+    if path.parent.name:
+        return path.parent.name
+    return path.stem
 
 
 def run_linear_probe(

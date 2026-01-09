@@ -64,8 +64,7 @@
    python -m src.embed.debug_diagnostics \
      --embeddings embeddings/raw_embeddings.npy \
      --embeddings-no-normalize embeddings/raw_embeddings_no_norm.npy \
-     --meta embeddings/meta.csv \
-     --label-column label
+     --meta embeddings/meta.csv
    ```
    > `--data` を渡すと `feats`/`centers` の shape と統計（mean/std/min/max/nans/infs）を出力します。\
    > 線形プローブは `--embeddings` と `--meta` が必須です。\
