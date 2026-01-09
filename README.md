@@ -42,6 +42,10 @@
    > `forward` は loss を返す実装が多く、埋め込みとして扱うと次元が潰れてクラスタリングが退化するため対象外です。\
    > もし抽出ベクトルが極端に小さい（例: 8 次元未満）場合は、モデルの組み合わせや入力形式を確認してください。
    >
+   > **MeshMAE 公式事前学習モデルの補足:** `model.meshmae.Mesh_mae` を指定した場合は、
+   > 公式実装の `forward` を使わずにエンコーダのみを通して埋め込みを抽出します。\
+   > `shapenet_pretrain.pkl` は再構成 loss を返すため、エンコーダ出力を使う必要があります。
+   >
    > **MeshMAE 公式 ckpt の入力について:** 公式 `shapenet_pretrain.pkl` は論文準拠の 10ch 特徴量
    > （area 1 + interior angles 3 + face normal 3 + face normal⋅vertex normals 3）を想定し、
    > 1 patch = 64 faces（3 回 subdivide）で学習されています。\

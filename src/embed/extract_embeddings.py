@@ -546,8 +546,79 @@ def meshmae_embedding_pipeline(
             return None
         return embedding
 
+    def is_meshmae_pretrain_model(target_model: torch.nn.Module) -> bool:
+        required_attrs = (
+            "to_patch_embedding",
+            "pos_embedding",
+            "blocks",
+            "norm",
+            "cls_token",
+            "encoder_cls_token_pos",
+        )
+        return all(hasattr(target_model, name) for name in required_attrs)
+
+    def ensure_meshmae_embedding_shape(embedding: torch.Tensor, target_model: torch.nn.Module) -> None:
+        if embedding.dim() != 2:
+            raise ValueError(
+                "MeshMAE 公式事前学習モデルの埋め込みは 2 次元 (B, D) を期待します。"
+                f" 実際の shape={tuple(embedding.shape)} です。"
+            )
+        if hasattr(target_model, "cls_token"):
+            expected_dim = int(target_model.cls_token.shape[-1])
+            if embedding.shape[1] != expected_dim:
+                raise ValueError(
+                    "MeshMAE 公式事前学習モデルの埋め込み次元が想定と一致しません。"
+                    f" 期待値={expected_dim}, 実際={embedding.shape[1]} です。"
+                )
+
+    def meshmae_encoder_only_no_mask(
+        target_model: torch.nn.Module,
+        mesh_inputs: Tuple[torch.Tensor, ...],
+        pool_strategy: str,
+    ) -> torch.Tensor:
+        faces, feats, centers, Fs, cordinates = mesh_inputs
+        del faces, Fs, cordinates
+        # 公式 MeshMAE のエンコーダに合わせてパッチ埋め込みを構築する
+        tokens = target_model.to_patch_embedding(feats)
+        center_of_patches = centers.mean(dim=2)
+        pos = target_model.pos_embedding(center_of_patches)
+        batch_size = tokens.shape[0]
+        cls_tok = target_model.cls_token.expand(batch_size, -1, -1)
+        cls_pos = target_model.encoder_cls_token_pos.expand(batch_size, -1, -1)
+        tokens = torch.cat([tokens, cls_tok], dim=1)
+        pos_full = torch.cat([pos, cls_pos], dim=1)
+        tokens = tokens + pos_full
+        for blk in target_model.blocks:
+            tokens = blk(tokens)
+        tokens = target_model.norm(tokens)
+
+        if pool_strategy == "cls":
+            embedding = tokens[:, -1, :]
+        elif pool_strategy == "mean":
+            embedding = tokens[:, :-1, :].mean(dim=1)
+        elif pool_strategy == "maxpool256":
+            patch_tokens = tokens[:, :-1, :]
+            if patch_tokens.shape[1] < 256:
+                pad_len = 256 - patch_tokens.shape[1]
+                pad_value = torch.finfo(patch_tokens.dtype).min
+                padding = torch.full(
+                    (patch_tokens.shape[0], pad_len, patch_tokens.shape[2]),
+                    pad_value,
+                    device=patch_tokens.device,
+                    dtype=patch_tokens.dtype,
+                )
+                patch_tokens = torch.cat([patch_tokens, padding], dim=1)
+            elif patch_tokens.shape[1] > 256:
+                patch_tokens = patch_tokens[:, :256, :]
+            embedding, _ = patch_tokens.max(dim=1)
+        else:
+            raise ValueError(f"未知の pool_strategy です: {pool_strategy}")
+        return embedding
+
     def select_encoder_output(model: torch.nn.Module, mesh_inputs: Tuple[torch.Tensor, ...]) -> torch.Tensor:
         candidates = []
+        if is_meshmae_pretrain_model(model):
+            candidates.append(("meshmae.encoder_only_no_mask", None))
         if hasattr(model, "forward_encoder"):
             candidates.append(("forward_encoder", model.forward_encoder))
         if hasattr(model, "encode"):
@@ -570,6 +641,10 @@ def meshmae_embedding_pipeline(
         last_shape: Optional[torch.Size] = None
         for label, fn in candidates:
             logging.debug("Attempting MeshMAE inference using %s", label)
+            if label == "meshmae.encoder_only_no_mask":
+                embedding = meshmae_encoder_only_no_mask(model, mesh_inputs, config.pool_strategy)
+                ensure_meshmae_embedding_shape(embedding, model)
+                return embedding
             try:
                 output = call_with_meshmae_inputs(fn, label, mesh_inputs)
             except TypeError as exc:
