@@ -430,6 +430,18 @@ python -m pip install -e ../SubdivNet  # maps モジュールを Python から�
    ```
    実行後、`embeddings/raw_embeddings.npy` と `embeddings/meta.csv`（パスは YAML の `output.*` で変更可）に特徴量とメタデータが保存されます。`run_target_pretrain.sh` などの継続SSLスクリプトは実行不要です。
 
+   > **正規化オプションの注意:** `src.embed.extract_embeddings` の `--no-normalize` は StandardScaler による正規化を無効化します。`--normalize` と同時には指定できないため排他的です。`--no-normalize` を付けた場合は正規化されない埋め込みが出力されるため、正規化ありと比較したい場合は出力ファイル名（`output.*`）を分けて2回抽出してください。
+
+   ```bash
+   # 正規化なしで抽出（比較用に出力名を分ける）
+   python -m src.embed.extract_embeddings \
+     --config configs/extract.yaml \
+     --model-factory model.meshmae.Mesh_mae \
+     --no-normalize \
+     --out embeddings/raw_embeddings_no_norm.npy \
+     --meta embeddings/meta.csv
+   ```
+
 ```bash
 python -m src.embed.extract_embeddings \
   --config configs/extract.yaml \
