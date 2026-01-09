@@ -52,7 +52,26 @@
    > 本リポジトリのデフォルト `feature_mode=paper10` は公式 ckpt に合わせて 10ch を生成します。
    > 以前の 13ch（center を含む独自特徴）は `feature_mode=legacy13` に切り替え可能ですが、
    > 公式 ckpt とは互換性がありません。
-5. クラスタリング + レポート生成
+5. 入力統計・線形プローブ診断（任意）
+   ```bash
+   # MeshMAE入力(feats/centers)の統計をサンプリングして出力
+   python -m src.embed.debug_diagnostics \
+     --data datasets/fossils_maps \
+     --feature-mode paper10 \
+     --sample-limit 10
+
+   # 線形プローブ精度（logreg）を算出（正規化あり/なし比較）
+   python -m src.embed.debug_diagnostics \
+     --embeddings embeddings/raw_embeddings.npy \
+     --embeddings-no-normalize embeddings/raw_embeddings_no_norm.npy \
+     --meta embeddings/meta.csv \
+     --labels datasets/fossils_labels.csv \
+     --label-column label
+   ```
+   > `--data` を渡すと `feats`/`centers` の shape と統計（mean/std/min/max/nans/infs）を出力します。\
+   > 線形プローブは `--embeddings` と `--meta`/`--labels` が必須です。\
+   > `--embeddings-no-normalize` を指定すると正規化なしの精度も同時に算出します。
+6. クラスタリング + レポート生成
    ```bash
    python -m src.cluster.run_clustering \
      --emb embeddings/raw_embeddings.npy \

@@ -87,6 +87,18 @@ def parse_args() -> argparse.Namespace:
         help="Optional cophenetic distance threshold for flattening (distance criterion).",
     )
     parser.add_argument(
+        "--linkage-method",
+        type=str,
+        default="ward",
+        help="Linkage method for hierarchical clustering (ward, average, complete, single, etc.).",
+    )
+    parser.add_argument(
+        "--metric",
+        type=str,
+        default="euclidean",
+        help="Distance metric for hierarchical clustering (ignored when using ward).",
+    )
+    parser.add_argument(
         "--max-clusters",
         type=int,
         default=None,
@@ -251,9 +263,16 @@ def run_hierarchical_clustering(
     embeddings: np.ndarray,
     distance_threshold: Optional[float],
     max_clusters: Optional[int],
+    linkage_method: str,
+    metric: str,
 ) -> tuple[np.ndarray, np.ndarray]:
-    linkage_matrix = linkage(embeddings, method="ward", metric="euclidean")
-    ordered = optimal_leaf_ordering(linkage_matrix, embeddings, metric="euclidean")
+    if linkage_method == "ward":
+        linkage_matrix = linkage(embeddings, method="ward", metric="euclidean")
+        ordered = optimal_leaf_ordering(linkage_matrix, embeddings, metric="euclidean")
+    else:
+        condensed = pdist(embeddings, metric=metric)
+        linkage_matrix = linkage(condensed, method=linkage_method)
+        ordered = optimal_leaf_ordering(linkage_matrix, condensed)
 
     if distance_threshold is not None:
         labels = fcluster(ordered, t=distance_threshold, criterion="distance")
@@ -311,6 +330,7 @@ def plot_and_save_dendrogram(
     figsize: tuple[float, float],
     label_map_out: Optional[Path],
     labels_for_map: list[str],
+    title: str,
 ) -> None:
     shown_indices: set[int] = set()
     show_labels = leaf_labels is not None and label_mode != "none"
@@ -337,7 +357,7 @@ def plot_and_save_dendrogram(
         color_threshold=None,
         no_labels=not show_labels,
     )
-    plt.title("Ward hierarchical clustering with optimal leaf ordering")
+    plt.title(title)
     plt.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(output_path, dpi=200, bbox_inches="tight")
@@ -375,8 +395,20 @@ def main() -> None:
     if max_clusters <= 0:
         raise ValueError("Number of clusters must be positive.")
 
+    linkage_method = args.linkage_method.lower()
+    metric = args.metric.lower()
+    if linkage_method == "ward" and metric != "euclidean":
+        logging.warning(
+            "Ward linkage requires euclidean distances; switching to average linkage for metric=%s.",
+            metric,
+        )
+        linkage_method = "average"
+
     logging.info(
-        "Running Ward hierarchical clustering (n_samples=%d, n_features=%d, max_clusters=%d, distance_threshold=%s)",
+        "Running hierarchical clustering (method=%s, metric=%s, n_samples=%d, n_features=%d, "
+        "max_clusters=%d, distance_threshold=%s)",
+        linkage_method,
+        metric,
         embeddings.shape[0],
         embeddings.shape[1],
         max_clusters,
@@ -387,6 +419,8 @@ def main() -> None:
         embeddings,
         distance_threshold=args.distance_threshold,
         max_clusters=max_clusters,
+        linkage_method=linkage_method,
+        metric=metric,
     )
 
     metadata = load_metadata(args.meta, embeddings.shape[0])
@@ -439,6 +473,7 @@ def main() -> None:
         max_width=args.max_fig_width,
         width_per_leaf=args.fig_width_per_leaf,
     )
+    title = f"Hierarchical clustering (method={linkage_method}, metric={metric})"
     plot_and_save_dendrogram(
         linkage_matrix,
         leaf_labels,
@@ -451,6 +486,7 @@ def main() -> None:
         figsize,
         args.label_map_out,
         labels_for_map,
+        title,
     )
 
     ari = float(adjusted_rand_score(kmeans_labels, hier_labels))
