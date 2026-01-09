@@ -1,7 +1,7 @@
 # Embedding extraction options
 input:
-  dataroot: ./datasets/fossils_maps
-  checkpoint: ../MeshMAE/checkpoints/shapenet_pretrain.pkl
+  dataroot: ./datasets/maps
+  checkpoint: /mnt/e/3D_classification/MeshMAE/checkpoints/shapenet_pretrain.pkl
   mesh_extension: ["ply", "stl", "obj"]
   only_repaired_maps: false
 
