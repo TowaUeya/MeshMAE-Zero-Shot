@@ -41,9 +41,8 @@ from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import cdist
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
-from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score, silhouette_samples
+from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from sklearn.metrics.cluster import contingency_matrix
-from sklearn.mixture import GaussianMixture
 from sklearn.preprocessing import StandardScaler, normalize
 
 import hdbscan
@@ -327,32 +326,8 @@ def relax_hdbscan_params(cfg: Dict) -> Dict:
     return relaxed
 
 
-def compute_ambiguity(
-    embeddings: np.ndarray,
-    kmeans_labels: np.ndarray,
-    kmeans_distances: np.ndarray,
-    hdbscan_labels: np.ndarray,
-    silhouette_threshold: float,
-    posterior_threshold: float,
-    distance_quantile: float,
-    gmm_model: GaussianMixture,
-    distance_metric: str,
-) -> np.ndarray:
-    unique_labels = np.unique(kmeans_labels)
-    if unique_labels.size < 2:
-        silhouette_vals = np.zeros(len(kmeans_labels))
-    else:
-        silhouette_vals = silhouette_samples(embeddings, kmeans_labels, metric=distance_metric)
-    posterior = gmm_model.predict_proba(embeddings)
-    max_posterior = posterior.max(axis=1)
-    distance_cutoff = np.quantile(kmeans_distances, distance_quantile)
-    mask = (
-        (hdbscan_labels == -1)
-        | (silhouette_vals < silhouette_threshold)
-        | (kmeans_distances > distance_cutoff)
-        | (max_posterior < posterior_threshold)
-    )
-    return mask
+def compute_ambiguity(hdbscan_labels: np.ndarray) -> np.ndarray:
+    return hdbscan_labels == -1
 
 
 def select_label_column(metadata: pd.DataFrame, requested: Optional[str]) -> str:
@@ -1489,24 +1464,10 @@ def main() -> None:
     plot_entries: List[PlotEntry] = []
     ambiguity_mask = None
     if run_kmeans_pipeline:
-        gmm = GaussianMixture(
-            n_components=auto_k_result.consensus_k,
-            covariance_type=cfg.covariance_type,
-            random_state=42,
-        )
-        gmm.fit(clustering_embeddings)
-
-        ambiguity_mask = compute_ambiguity(
-            clustering_embeddings,
-            kmeans_labels,
-            kmeans_distances,
-            hdbscan_labels if hdbscan_labels is not None else np.full(len(kmeans_labels), -1),
-            cfg.silhouette_threshold,
-            cfg.posterior_threshold,
-            cfg.distance_quantile,
-            gmm,
-            distance_metric,
-        )
+        if hdbscan_labels is not None:
+            ambiguity_mask = compute_ambiguity(hdbscan_labels)
+        else:
+            ambiguity_mask = np.full(len(kmeans_labels), None)
 
         consensus_labels = kmeans_labels.copy()
 
@@ -1653,29 +1614,30 @@ def main() -> None:
         metric=distance_metric,
     )
     non_ambiguous_count = None
-    non_ambiguous_kmeans_metrics = None
-    non_ambiguous_knn_metrics = None
-    non_ambiguous_noise_count = None
-    non_ambiguous_noise_rate = None
-    non_ambiguous_noise_present = None
-    if run_kmeans_pipeline:
-        non_ambiguous_mask = ~ambiguity_mask
+    non_ambiguous_rate = None
+    non_ambiguous_knn_at1 = None
+    non_ambiguous_purity = None
+    ambiguous_noise_count = None
+    ambiguous_noise_rate = None
+    if hdbscan_labels is not None:
+        ambiguous_noise_count = int(np.sum(hdbscan_labels == -1))
+        ambiguous_noise_rate = hdbscan_noise_rate
+        non_ambiguous_mask = hdbscan_labels != -1
         non_ambiguous_count = int(np.sum(non_ambiguous_mask))
-        non_ambiguous_kmeans_metrics = compute_cluster_metrics(
-            true_labels_encoded, kmeans_labels, mask=non_ambiguous_mask
+        non_ambiguous_rate = (
+            non_ambiguous_count / len(hdbscan_labels) if len(hdbscan_labels) else None
         )
-        non_ambiguous_knn_metrics, _, _ = compute_knn_accuracy(
-            clustering_embeddings[non_ambiguous_mask],
-            true_labels_raw.to_numpy()[non_ambiguous_mask],
-            ks=[1],
-            metric=distance_metric,
-        )
-        if hdbscan_labels is not None:
-            non_ambiguous_noise_count = int(np.sum((hdbscan_labels == -1) & non_ambiguous_mask))
-            non_ambiguous_noise_rate = (
-                non_ambiguous_noise_count / non_ambiguous_count if non_ambiguous_count else None
+        non_ambiguous_purity = compute_cluster_metrics(
+            true_labels_encoded, hdbscan_labels, mask=non_ambiguous_mask
+        )["purity"]
+        if non_ambiguous_count > 1:
+            non_ambiguous_knn_metrics, _, _ = compute_knn_accuracy(
+                clustering_embeddings[non_ambiguous_mask],
+                true_labels_raw.to_numpy()[non_ambiguous_mask],
+                ks=[1],
+                metric=distance_metric,
             )
-            non_ambiguous_noise_present = non_ambiguous_noise_count > 0
+            non_ambiguous_knn_at1 = non_ambiguous_knn_metrics.get("1", {}).get("overall")
     if args.preset == "retrieval_knn":
         knn_confusion = compute_knn_confusion_matrix(
             clustering_embeddings,
@@ -1706,16 +1668,6 @@ def main() -> None:
             "hungarian_accuracy": kmeans_hungarian,
             "cluster_sizes": compute_cluster_sizes(kmeans_labels),
         }
-        summary["non_ambiguous"] = {
-            "count": non_ambiguous_count,
-            "kmeans_metrics": non_ambiguous_kmeans_metrics,
-            "knn_accuracy": non_ambiguous_knn_metrics.get("1"),
-            "hdbscan_noise_in_non_ambiguous": {
-                "count": non_ambiguous_noise_count,
-                "rate": non_ambiguous_noise_rate,
-                "present": non_ambiguous_noise_present,
-            },
-        }
         if k_source == "auto":
             summary["auto_k"] = {
                 "consensus_k": int(auto_k_result.consensus_k),
@@ -1724,6 +1676,17 @@ def main() -> None:
                 "gap_k": int(auto_k_result.gap_k),
                 "bic_k": int(auto_k_result.bic_k),
             }
+
+    summary["non_ambiguous"] = {
+        "size": non_ambiguous_count,
+        "rate": non_ambiguous_rate,
+        "knn_at_1": non_ambiguous_knn_at1,
+        "purity": non_ambiguous_purity,
+    }
+    summary["ambiguous_noise"] = {
+        "count": ambiguous_noise_count,
+        "rate": ambiguous_noise_rate,
+    }
 
     if hdbscan_labels is not None:
         summary["hdbscan"] = {

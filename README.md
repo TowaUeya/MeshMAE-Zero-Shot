@@ -536,7 +536,7 @@ python -m src.cluster.run_clustering \
 - `out/report.html`（テンプレートは `src/cluster/templates/report.html`）
 
 `hdbscan_core` プリセットでは KMeans/consensus を走らせないため、`out/cluster/consensus.csv` や KMeans 系プロット/HTML レポートは生成されません。代わりに HDBSCAN のコア出力（`hdbscan_core_assignments.csv`/`hdbscan_core_medoids.csv`）のみを保存します。
-`summary.json` には `kmeans`/`non_ambiguous` など KMeans 依存のフィールドがあり、`hdbscan_core` ではそれらを省略します。
+`summary.json` の `non_ambiguous` は HDBSCAN の `label != -1` を非曖昧集合として集計し、`size`/`rate`/`knn_at_1`/`purity` を出力します。`ambiguous_noise` にはノイズ（-1）の件数と率が入ります。HDBSCAN を実行していない場合はこれらが `null` になります。
 
 **診断ログ**: K-Means/HDBSCAN に渡す特徴量の平均・分散・ユニーク数をログ出力します。特徴量が全ゼロ・全同一・次元 0 の場合は例外で停止し、埋め込み抽出の設定や入力メッシュを見直してください。HDBSCAN は `min_cluster_size`/`min_samples`/`metric` をログし、スケール不整合が疑われる場合は追加の標準化を行います。ノイズ率が高いときはパラメータを緩和して再実行します。
 
