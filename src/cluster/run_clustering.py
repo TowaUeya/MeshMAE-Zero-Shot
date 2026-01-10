@@ -35,6 +35,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import yaml
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import cdist
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
@@ -166,6 +167,19 @@ def log_feature_statistics(embeddings: np.ndarray, label: str) -> None:
     logging.info("%s feature stats (mean/variance/unique per dimension):\n%s", label, stats_df.to_string(index=True))
 
 
+def log_feature_summary(embeddings: np.ndarray, label: str) -> None:
+    means = embeddings.mean(axis=0)
+    stds = embeddings.std(axis=0)
+    summary = {
+        "dim": int(embeddings.shape[1]),
+        "mean_min": float(means.min()),
+        "mean_max": float(means.max()),
+        "std_min": float(stds.min()),
+        "std_max": float(stds.max()),
+    }
+    logging.info("%s feature summary: %s", label, summary)
+
+
 def ensure_non_degenerate_embeddings(embeddings: np.ndarray, label: str) -> None:
     if embeddings.ndim != 2:
         raise ValueError(f"{label} embeddings must be a 2D array, got shape {embeddings.shape}.")
@@ -177,6 +191,8 @@ def ensure_non_degenerate_embeddings(embeddings: np.ndarray, label: str) -> None
         raise ValueError(f"{label} embeddings are all zeros. Check embedding extraction outputs.")
     if np.allclose(embeddings, embeddings[0]):
         raise ValueError(f"{label} embeddings are identical across samples. Check embedding extraction outputs.")
+    if not np.isfinite(embeddings).all():
+        raise ValueError(f"{label} embeddings contain NaN or Inf values.")
 
 
 def run_hdbscan(embeddings: np.ndarray, cfg: Dict) -> hdbscan.HDBSCAN:
@@ -303,7 +319,7 @@ def compute_knn_accuracy(
     labels: np.ndarray,
     ks: Iterable[int],
     metric: str,
-) -> Dict[str, Dict[str, Optional[float]]]:
+) -> Tuple[Dict[str, Dict[str, Optional[float]]], Dict[str, float], Dict[str, int]]:
     if embeddings.shape[0] != labels.shape[0]:
         raise ValueError("Embeddings and labels must have the same number of samples for kNN evaluation.")
     n_samples = embeddings.shape[0]
@@ -311,6 +327,8 @@ def compute_knn_accuracy(
     distances = cdist(embeddings, embeddings, metric=metric)
     np.fill_diagonal(distances, np.inf)
     results: Dict[str, Dict[str, Optional[float]]] = {}
+    per_class_k1: Dict[str, float] = {}
+    per_class_counts: Dict[str, int] = {}
     for k in ks:
         if k <= 0 or k >= n_samples:
             results[str(k)] = {"overall": None, "macro": None}
@@ -327,7 +345,25 @@ def compute_knn_accuracy(
             per_class.append(float(np.mean(preds[class_mask] == class_id)))
         macro = float(np.mean(per_class)) if per_class else None
         results[str(k)] = {"overall": overall, "macro": macro}
-    return results
+        if k == 1:
+            for class_id, class_name in label_mapping.items():
+                class_mask = label_codes == class_id
+                if not np.any(class_mask):
+                    continue
+                per_class_k1[class_name] = float(np.mean(preds[class_mask] == class_id))
+                per_class_counts[class_name] = int(np.sum(class_mask))
+    return results, per_class_k1, per_class_counts
+
+
+def compute_hungarian_accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    matrix = contingency_matrix(y_true, y_pred)
+    if matrix.size == 0:
+        return 0.0
+    max_value = matrix.max()
+    cost = max_value - matrix
+    row_ind, col_ind = linear_sum_assignment(cost)
+    matched = matrix[row_ind, col_ind].sum()
+    return float(matched / matrix.sum())
 
 
 def render_report(
@@ -573,14 +609,39 @@ def parse_args() -> argparse.Namespace:
         help="Apply StandardScaler before clustering.",
     )
     parser.add_argument(
+        "--preproc-order",
+        choices=("raw", "l2", "scale->pca->l2", "l2->pca", "l2->pca->scale"),
+        default=None,
+        help="Preprocessing order override for clustering embeddings.",
+    )
+    parser.add_argument(
+        "--pca-dim",
+        type=int,
+        default=None,
+        help="Apply PCA with a fixed integer dimension. 0 disables.",
+    )
+    parser.add_argument(
+        "--pca-var",
+        type=float,
+        default=None,
+        help="Apply PCA using variance ratio (0-1). Overrides --pca-dim.",
+    )
+    parser.add_argument(
         "--pca-components",
         type=float,
         default=None,
         help="Apply PCA with N components (int) or variance ratio (0-1). 0/None disables.",
     )
     parser.add_argument(
+        "--whiten",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Whiten PCA components.",
+    )
+    parser.add_argument(
         "--l2-normalize",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help="Apply L2 normalization before clustering (recommended for cosine distance).",
     )
     parser.add_argument(
@@ -603,6 +664,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--hdbscan-min-cluster-size", type=int, default=5, help="HDBSCAN min_cluster_size.")
     parser.add_argument("--hdbscan-min-samples", type=int, default=None, help="HDBSCAN min_samples.")
+    parser.add_argument(
+        "--hdbscan-min-samples-mode",
+        choices=("fixed", "auto"),
+        default="fixed",
+        help="When sweeping, keep min_samples fixed or tie it to min_cluster_size.",
+    )
     parser.add_argument(
         "--hdbscan-metric",
         default="euclidean",
@@ -631,6 +698,77 @@ def parse_kmeans_k(raw: str) -> Optional[int]:
 
 def apply_l2_normalization(embeddings: np.ndarray) -> np.ndarray:
     return normalize(embeddings, norm="l2")
+
+
+def resolve_pca_components(args: argparse.Namespace, cfg: PipelineConfig) -> Optional[float]:
+    if args.pca_var is not None:
+        return args.pca_var
+    if args.pca_dim is not None:
+        return float(args.pca_dim)
+    if args.pca_components is not None:
+        return args.pca_components
+    return cfg.pca_components
+
+
+def apply_preprocessing(
+    embeddings: np.ndarray,
+    order: Optional[str],
+    scale_enabled: bool,
+    pca_components: Optional[float],
+    whiten: bool,
+    l2_normalize: bool,
+) -> Tuple[np.ndarray, Dict[str, Optional[float]]]:
+    working = embeddings
+    applied = {"scale": False, "pca_components": None, "whiten": whiten, "l2_normalize": False}
+
+    def do_scale() -> None:
+        nonlocal working
+        working, _ = apply_scaling(working, True)
+        applied["scale"] = True
+
+    def do_pca() -> None:
+        nonlocal working
+        if pca_components in (None, 0):
+            logging.warning("PCA requested in preprocessing order but pca_components is disabled; skipping PCA.")
+            return
+        pca_result = apply_pca(working, pca_components, whiten)
+        if pca_result is None:
+            logging.warning("PCA returned None; skipping PCA step.")
+            return
+        working = pca_result
+        applied["pca_components"] = pca_components
+
+    def do_l2() -> None:
+        nonlocal working
+        working = apply_l2_normalization(working)
+        applied["l2_normalize"] = True
+
+    if order is None:
+        if scale_enabled:
+            do_scale()
+        if pca_components not in (None, 0):
+            do_pca()
+        if l2_normalize:
+            do_l2()
+    elif order == "raw":
+        pass
+    elif order == "l2":
+        do_l2()
+    elif order == "scale->pca->l2":
+        do_scale()
+        do_pca()
+        do_l2()
+    elif order == "l2->pca":
+        do_l2()
+        do_pca()
+    elif order == "l2->pca->scale":
+        do_l2()
+        do_pca()
+        do_scale()
+    else:
+        raise ValueError(f"Unknown preprocessing order: {order}")
+
+    return working, applied
 
 
 def build_fixed_k_result(k: int) -> AutoKResult:
@@ -664,12 +802,6 @@ def main() -> None:
 
     cfg = load_config(args.config)
     embeddings = load_embeddings(args.emb)
-    logging.info(
-        "Preprocessing config: scale=%s, pca_components=%s, whiten=%s",
-        cfg.scale,
-        cfg.pca_components,
-        cfg.whiten,
-    )
     if not args.meta.exists():
         raise FileNotFoundError(f"Metadata file not found: {args.meta}")
     metadata = pd.read_csv(args.meta)
@@ -686,23 +818,50 @@ def main() -> None:
     true_labels_encoded, label_mapping = encode_labels(true_labels_raw)
     logging.info("Using label column '%s' with %d classes.", label_column, len(label_mapping))
 
-    scale_enabled = cfg.scale if args.scale is None else args.scale
-    pca_components = cfg.pca_components if args.pca_components is None else args.pca_components
-
-    scaled, _ = apply_scaling(embeddings, scale_enabled)
-    pca_embeddings = apply_pca(scaled, pca_components, cfg.whiten)
-    working_embeddings = pca_embeddings if pca_embeddings is not None else scaled
     distance_metric = args.distance_metric
-    use_l2_norm = args.l2_normalize or distance_metric == "cosine"
-    clustering_embeddings = working_embeddings
-    if use_l2_norm:
-        clustering_embeddings = apply_l2_normalization(working_embeddings)
-        logging.info("Applied L2 normalization to embeddings for clustering.")
-        if distance_metric == "cosine":
-            logging.info("Cosine distance with L2-normalized embeddings is equivalent to Euclidean distance for KMeans.")
-    elif distance_metric == "cosine":
+    default_preproc = (
+        args.preproc_order is None
+        and args.scale is None
+        and args.pca_components is None
+        and args.pca_dim is None
+        and args.pca_var is None
+        and args.l2_normalize is None
+        and args.whiten is None
+    )
+    if default_preproc:
+        scale_enabled = False
+        pca_components = None
+        whiten = False
+        use_l2_norm = True
+    else:
+        scale_enabled = cfg.scale if args.scale is None else args.scale
+        pca_components = resolve_pca_components(args, cfg)
+        whiten = cfg.whiten if args.whiten is None else args.whiten
+        use_l2_norm = args.l2_normalize if args.l2_normalize is not None else distance_metric == "cosine"
+
+    clustering_embeddings, applied_preproc = apply_preprocessing(
+        embeddings=embeddings,
+        order=args.preproc_order,
+        scale_enabled=scale_enabled,
+        pca_components=pca_components,
+        whiten=whiten,
+        l2_normalize=use_l2_norm,
+    )
+    logging.info(
+        "Preprocessing config: order=%s, scale=%s, pca_components=%s, whiten=%s, l2_normalize=%s",
+        args.preproc_order or "default",
+        applied_preproc["scale"],
+        applied_preproc["pca_components"],
+        applied_preproc["whiten"],
+        applied_preproc["l2_normalize"],
+    )
+    if applied_preproc["l2_normalize"] and distance_metric == "cosine":
+        logging.info("Cosine distance with L2-normalized embeddings is equivalent to Euclidean distance for KMeans.")
+    elif distance_metric == "cosine" and not applied_preproc["l2_normalize"]:
         logging.warning("Cosine distance selected without L2 normalization; consider --l2-normalize for KMeans.")
+
     ensure_non_degenerate_embeddings(clustering_embeddings, "KMeans input")
+    log_feature_summary(clustering_embeddings, "Clustering input")
     log_feature_statistics(clustering_embeddings, "Clustering input")
 
     fixed_k = parse_kmeans_k(args.kmeans_k)
@@ -732,6 +891,7 @@ def main() -> None:
     hdbscan_noise_rate = None
     hdbscan_metrics = None
     hdbscan_metrics_no_noise = None
+    hdbscan_best_score = None
     hdbscan_sweep_rows: List[Dict[str, Optional[float]]] = []
     if should_run_hdbscan(args):
         hdbscan_embeddings = clustering_embeddings
@@ -750,6 +910,7 @@ def main() -> None:
                 "metric": args.hdbscan_metric,
             }
         )
+        ensure_non_degenerate_embeddings(hdbscan_embeddings, "HDBSCAN input")
         logging.info(
             "HDBSCAN config: min_cluster_size=%s, min_samples=%s, metric=%s, preprocessing_scale=%s, extra_hdbscan_scale=%s",
             hdbscan_cfg.get("min_cluster_size", 8),
@@ -768,7 +929,14 @@ def main() -> None:
             best_labels = None
             best_cfg = None
             for min_cluster_size in sweep_values_list:
-                sweep_cfg = dict(hdbscan_cfg, min_cluster_size=min_cluster_size)
+                min_samples = hdbscan_cfg.get("min_samples")
+                if args.hdbscan_min_samples_mode == "auto":
+                    min_samples = min_cluster_size
+                sweep_cfg = dict(
+                    hdbscan_cfg,
+                    min_cluster_size=min_cluster_size,
+                    min_samples=min_samples,
+                )
                 model = run_hdbscan(hdbscan_embeddings, sweep_cfg)
                 labels = model.labels_
                 noise_rate = float(np.mean(labels == -1))
@@ -777,22 +945,27 @@ def main() -> None:
                 metrics_no_noise = compute_cluster_metrics(
                     true_labels_encoded, labels, mask=labels != -1
                 )
+                coverage = 1.0 - noise_rate
+                purity_no_noise = metrics_no_noise["purity"]
+                score = (purity_no_noise * coverage) if purity_no_noise is not None else float("-inf")
                 hdbscan_sweep_rows.append(
                     {
                         "min_cluster_size": min_cluster_size,
+                        "min_samples": sweep_cfg.get("min_samples"),
                         "clusters_found": clusters_found,
                         "noise_rate": noise_rate,
+                        "coverage": coverage,
                         "ari": metrics_all["ari"],
                         "nmi": metrics_all["nmi"],
                         "purity": metrics_all["purity"],
                         "ari_no_noise": metrics_no_noise["ari"],
                         "nmi_no_noise": metrics_no_noise["nmi"],
                         "purity_no_noise": metrics_no_noise["purity"],
+                        "score": score,
                         "n_samples": metrics_all["n_samples"],
                         "n_samples_no_noise": metrics_no_noise["n_samples"],
                     }
                 )
-                score = metrics_no_noise["ari"] if metrics_no_noise["ari"] is not None else float("-inf")
                 if score > best_score or (score == best_score and noise_rate < best_noise):
                     best_score = score
                     best_noise = noise_rate
@@ -803,6 +976,7 @@ def main() -> None:
             hdbscan_labels = best_labels
             hdbscan_cfg = best_cfg
             hdbscan_noise_rate = float(np.mean(hdbscan_labels == -1))
+            hdbscan_best_score = best_score
         else:
             hdbscan_model = run_hdbscan(hdbscan_embeddings, hdbscan_cfg)
             hdbscan_labels = hdbscan_model.labels_
@@ -891,7 +1065,8 @@ def main() -> None:
     )
 
     kmeans_metrics = compute_cluster_metrics(true_labels_encoded, kmeans_labels)
-    knn_metrics = compute_knn_accuracy(
+    kmeans_hungarian = compute_hungarian_accuracy(true_labels_encoded, kmeans_labels)
+    knn_metrics, knn_per_class_k1, knn_per_class_counts = compute_knn_accuracy(
         clustering_embeddings,
         true_labels_raw.to_numpy(),
         ks=[1, 5, 10],
@@ -901,10 +1076,11 @@ def main() -> None:
     summary = {
         "generated_at": datetime.utcnow().isoformat(),
         "preprocess": {
-            "scale": scale_enabled,
-            "pca_components": pca_components,
-            "whiten": cfg.whiten,
-            "l2_normalize": use_l2_norm,
+            "order": args.preproc_order or "default",
+            "scale": applied_preproc["scale"],
+            "pca_components": applied_preproc["pca_components"],
+            "whiten": applied_preproc["whiten"],
+            "l2_normalize": applied_preproc["l2_normalize"],
             "distance_metric": distance_metric,
         },
         "label_column": label_column,
@@ -912,6 +1088,7 @@ def main() -> None:
             "k": int(auto_k_result.consensus_k),
             "k_source": k_source,
             "metrics": kmeans_metrics,
+            "hungarian_accuracy": kmeans_hungarian,
             "cluster_sizes": compute_cluster_sizes(kmeans_labels),
         },
         "knn_accuracy": knn_metrics,
@@ -935,15 +1112,28 @@ def main() -> None:
             },
             "clusters_found": len(set(hdbscan_labels)) - (1 if -1 in hdbscan_labels else 0),
             "noise_rate": hdbscan_noise_rate,
+            "coverage": None if hdbscan_noise_rate is None else 1.0 - hdbscan_noise_rate,
             "metrics": hdbscan_metrics,
             "metrics_no_noise": hdbscan_metrics_no_noise,
+            "score": hdbscan_best_score,
             "cluster_sizes": compute_cluster_sizes(hdbscan_labels),
         }
 
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     if hdbscan_sweep_rows:
-        pd.DataFrame(hdbscan_sweep_rows).to_csv(output_dir / "hdbscan_sweep.csv", index=False)
+        sweep_path = output_dir / "hdbscan_sweep.csv"
+        pd.DataFrame(hdbscan_sweep_rows).to_csv(sweep_path, index=False)
+        summary.setdefault("hdbscan", {})["sweep_path"] = str(sweep_path)
+
+    if knn_per_class_k1:
+        knn_df = pd.DataFrame(
+            [
+                {"label": label, "knn_at_1": acc, "count": knn_per_class_counts.get(label, 0)}
+                for label, acc in knn_per_class_k1.items()
+            ]
+        )
+        knn_df.to_csv(output_dir / "knn_per_class_at1.csv", index=False)
 
     logging.info(
         "kNN acc@1/5/10 overall: %s",
@@ -960,10 +1150,11 @@ def main() -> None:
         kmeans_metrics["nmi"],
         kmeans_metrics["purity"],
     )
+    logging.info("KMeans Hungarian-matched accuracy: %.4f", kmeans_hungarian)
     if hdbscan_labels is not None:
         logging.info(
             "HDBSCAN best: clusters=%d noise=%.2f ARI=%s NMI=%s purity=%s "
-            "(no-noise ARI=%s NMI=%s purity=%s)",
+            "(no-noise ARI=%s NMI=%s purity=%s) score=%s",
             summary["hdbscan"]["clusters_found"],
             hdbscan_noise_rate,
             format_metric(hdbscan_metrics["ari"]),
@@ -972,6 +1163,7 @@ def main() -> None:
             format_metric(hdbscan_metrics_no_noise["ari"]),
             format_metric(hdbscan_metrics_no_noise["nmi"]),
             format_metric(hdbscan_metrics_no_noise["purity"]),
+            format_metric(hdbscan_best_score),
         )
 
 
