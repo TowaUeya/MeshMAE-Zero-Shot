@@ -22,6 +22,24 @@
   <p>Generated on {{ generated_at }} using MeshMAE Zero-Shot clustering pipeline.</p>
 
   <section>
+    <h2>Recommended vs Run Settings</h2>
+    <div class="metric-grid">
+      <div class="card">
+        <h3>Recommended settings</h3>
+        {% for key, value in recommended_settings.items() %}
+        <p><span class="badge">{{ key }}</span> {{ value }}</p>
+        {% endfor %}
+      </div>
+      <div class="card">
+        <h3>Run settings</h3>
+        {% for key, value in run_settings.items() %}
+        <p><span class="badge">{{ key }}</span> {{ value }}</p>
+        {% endfor %}
+      </div>
+    </div>
+  </section>
+
+  <section>
     <h2>Consensus Clustering Summary</h2>
     <div class="metric-grid">
       {% for metric in consensus_metrics %}

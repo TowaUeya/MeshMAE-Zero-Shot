@@ -91,6 +91,7 @@
    > - `--distance-metric cosine --l2-normalize` で L2 正規化 + コサイン距離を適用。
    > - `--preproc-order` で前処理順序を切り替え（例: `l2`, `scale->pca->l2`, `l2->pca`）。
    > - `--pca-dim 128` / `--pca-var 0.99` で PCA 次元数/分散保持率を指定（`--whiten/--no-whiten` で白色化を切り替え）。
+   > - `--preprocess-sweep` で前処理アブレーションを自動実行し、`out/preprocess_sweep.csv` と各設定の `summary_*.json` を出力（`--no-preprocess-sweep` で無効化）。
    > - `--label-col category` を渡すと、メタデータのラベル列を使って教師あり評価（ARI/NMI/purity）と
    >   kNN 精度（k=1,5,10）を算出し、`out/summary.json` に書き込みます（クラス別kNN@1は `knn_per_class_at1.csv`）。
    > - HDBSCAN のスイープ例（最良は `coverage × purity_no_noise` を最大化）:
@@ -104,9 +105,12 @@
    >     --l2-normalize \
    >     --run-hdbscan \
    >     --hdbscan-sweep \
+   >     --hdbscan-min-samples-sweep 1,2,5,10 \
    >     --hdbscan-min-samples-mode auto \
    >     --hdbscan-sweep-min 5 --hdbscan-sweep-max 80 --hdbscan-sweep-step 5
    >   ```
+   >   `--hdbscan-min-samples-sweep` を指定すると、`min_cluster_size` と独立に `min_samples` を探索できます。
+   > - HTML レポート先頭には「推奨設定（whiten=False / pca_dim=64 or 128 / l2=True）」と実行設定が並列表示されます。
 
 > 継続SSL（ドメイン適応）を行う場合は、後述の「2. 自己教師あり学習の継続」を参照してください。
 
