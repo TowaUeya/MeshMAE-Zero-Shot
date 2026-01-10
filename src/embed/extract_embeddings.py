@@ -165,6 +165,15 @@ def _metadata_mesh_path(mesh_path: Path) -> str:
     return str(mesh_path)
 
 
+def _infer_label(mesh_path: Path) -> str:
+    parts = mesh_path.parts
+    if "success" in parts:
+        success_idx = parts.index("success")
+        if success_idx + 1 < len(parts) - 1:
+            return parts[success_idx + 1]
+    return mesh_path.parent.name
+
+
 def list_meshes(root: Path, extensions: Tuple[str, ...], only_repaired_maps: bool) -> List[Path]:
     maps_root = root / "success"
     if maps_root.exists():
@@ -230,7 +239,13 @@ def geometry_embedding_pipeline(mesh_paths: Iterable[Path]) -> Tuple[np.ndarray,
         mesh = trimesh.load_mesh(mesh_path, process=False)
         vector = compute_geometry_descriptor(mesh)
         embeddings.append(vector)
-        metadata.append({"sample_id": mesh_path.stem, "mesh_path": _metadata_mesh_path(mesh_path)})
+        metadata.append(
+            {
+                "sample_id": mesh_path.stem,
+                "mesh_path": _metadata_mesh_path(mesh_path),
+                "label": _infer_label(mesh_path),
+            }
+        )
     if not embeddings:
         raise RuntimeError("No embeddings were generated. Check input directory.")
     return np.vstack(embeddings), metadata
@@ -682,7 +697,13 @@ def meshmae_embedding_pipeline(
         embedding_np = embedding.detach().cpu().numpy().astype(np.float32)
         embedding_vec = embedding_np.reshape(-1)
         embeddings.append(embedding_vec)
-        metadata.append({"sample_id": mesh_path.stem, "mesh_path": _metadata_mesh_path(mesh_path)})
+        metadata.append(
+            {
+                "sample_id": mesh_path.stem,
+                "mesh_path": _metadata_mesh_path(mesh_path),
+                "label": _infer_label(mesh_path),
+            }
+        )
 
     stacked = np.vstack(embeddings)
     return stacked, metadata
