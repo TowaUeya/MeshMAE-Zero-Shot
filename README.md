@@ -89,8 +89,21 @@
    > **k 固定での検証や距離の見直しをしたい場合**は、次のオプションを使えます。
    > - `--kmeans-k 40` のように整数指定で K-Means のクラスタ数を固定（未指定/`auto` は自動推定）。
    > - `--distance-metric cosine --l2-normalize` で L2 正規化 + コサイン距離を適用。
-   > - `--label-column label` を渡すと、メタデータのラベル列を使って kNN 精度（k=1,5,10）を算出し、
-   >   `out/cluster/knn_metrics.json` と `summary.json` に書き込みます。
+   > - `--label-col category` を渡すと、メタデータのラベル列を使って教師あり評価（ARI/NMI/purity）と
+   >   kNN 精度（k=1,5,10）を算出し、`out/summary.json` に書き込みます。
+   > - HDBSCAN のスイープ例（最良はノイズ除外ARI最大を採用）:
+   >   ```bash
+   >   python -m src.cluster.run_clustering \
+   >     --emb embeddings/raw_embeddings.npy \
+   >     --meta embeddings/meta.csv \
+   >     --out-dir out \
+   >     --kmeans-k 40 \
+   >     --distance-metric cosine \
+   >     --l2-normalize \
+   >     --run-hdbscan \
+   >     --hdbscan-sweep \
+   >     --hdbscan-sweep-min 5 --hdbscan-sweep-max 80 --hdbscan-sweep-step 5
+   >   ```
 
 > 継続SSL（ドメイン適応）を行う場合は、後述の「2. 自己教師あり学習の継続」を参照してください。
 
@@ -192,9 +205,12 @@ embeddings/
 └── meta.csv
 
 out/
-├── cluster/
+├── cluster/                # 旧形式のCSV（consensus 等）
 ├── plots/
-└── report.html
+├── report/
+├── summary.json            # 評価/前処理/クラスタ情報の統合サマリ
+├── kmeans_assignments.csv  # [path, true_label, pred_label]
+└── hdbscan_assignments.csv # [path, true_label, pred_label]
 ```
 
 ## ステップ別手順
