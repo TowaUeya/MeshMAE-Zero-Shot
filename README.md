@@ -83,7 +83,7 @@
      --emb embeddings/raw_embeddings.npy \
      --meta embeddings/meta.csv \
      --out-dir out \
-     --preset kmeans40_labelmatch
+     --preset hdbscan_core
    ```
    ```bash
    # k を固定して検証する例
