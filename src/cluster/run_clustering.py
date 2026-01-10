@@ -21,6 +21,7 @@ import dataclasses
 import importlib.util
 import json
 import logging
+import random
 import warnings
 from dataclasses import dataclass
 from datetime import datetime
@@ -210,6 +211,27 @@ def run_hdbscan(embeddings: np.ndarray, cfg: Dict) -> hdbscan.HDBSCAN:
     return model
 
 
+def build_preprocess_variant_id(
+    scale: bool, pca_dim: Optional[int], whiten: bool, l2_normalize: bool
+) -> str:
+    pca_label = "none" if pca_dim is None else str(pca_dim)
+    return f"scale-{int(scale)}_pca-{pca_label}_whiten-{int(whiten)}_l2-{int(l2_normalize)}"
+
+
+def parse_int_list(raw: Optional[str]) -> List[int]:
+    if raw is None:
+        return []
+    parts = [chunk.strip() for chunk in raw.split(",") if chunk.strip()]
+    values: List[int] = []
+    for part in parts:
+        try:
+            value = int(part)
+        except ValueError as exc:
+            raise ValueError(f"Invalid integer value '{part}' in list '{raw}'.") from exc
+        values.append(value)
+    return values
+
+
 def is_scale_inappropriate(embeddings: np.ndarray, ratio_threshold: float = 100.0) -> bool:
     stds = embeddings.std(axis=0)
     nonzero = stds[stds > 0]
@@ -374,6 +396,8 @@ def render_report(
     assignments: pd.DataFrame,
     auto_result: AutoKResult,
     plots: List[PlotEntry],
+    recommended_settings: Dict[str, str],
+    run_settings: Dict[str, str],
 ) -> None:
     env = Environment(
         loader=FileSystemLoader(template_path.parent),
@@ -396,6 +420,8 @@ def render_report(
         assignments=assignments.to_dict("records"),
         consensus_metrics=metrics,
         plots=[dataclasses.asdict(plot) for plot in plots],
+        recommended_settings=recommended_settings,
+        run_settings=run_settings,
     )
 
     report_dir = output_dir / "report"
@@ -646,6 +672,12 @@ def parse_args() -> argparse.Namespace:
         help="Apply L2 normalization before clustering (recommended for cosine distance).",
     )
     parser.add_argument(
+        "--preprocess-sweep",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run preprocessing ablation sweep and save preprocess_sweep.csv (default: enabled).",
+    )
+    parser.add_argument(
         "--label-col",
         "--label-column",
         dest="label_col",
@@ -665,6 +697,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--hdbscan-min-cluster-size", type=int, default=5, help="HDBSCAN min_cluster_size.")
     parser.add_argument("--hdbscan-min-samples", type=int, default=None, help="HDBSCAN min_samples.")
+    parser.add_argument(
+        "--hdbscan-min-samples-sweep",
+        default="1,2,5,10",
+        help="Comma-separated HDBSCAN min_samples values to sweep (default: 1,2,5,10).",
+    )
     parser.add_argument(
         "--hdbscan-min-samples-mode",
         choices=("fixed", "auto"),
@@ -772,6 +809,133 @@ def apply_preprocessing(
     return working, applied
 
 
+def run_preprocess_sweep(
+    embeddings: np.ndarray,
+    true_labels_raw: pd.Series,
+    true_labels_encoded: np.ndarray,
+    cfg: PipelineConfig,
+    output_dir: Path,
+    distance_metric: str,
+    hdbscan_min_samples: Optional[int],
+) -> None:
+    sweep_rows: List[Dict[str, Optional[float]]] = []
+    summary_paths: List[Path] = []
+    pca_dims = [None, 64, 128]
+    for scale in (False, True):
+        for pca_dim in pca_dims:
+            for whiten in (False, True):
+                if whiten and pca_dim is None:
+                    continue
+                for l2_normalize in (False, True):
+                    preprocessed, applied = apply_preprocessing(
+                        embeddings=embeddings,
+                        order=None,
+                        scale_enabled=scale,
+                        pca_components=None if pca_dim is None else float(pca_dim),
+                        whiten=whiten,
+                        l2_normalize=l2_normalize,
+                    )
+                    ensure_non_degenerate_embeddings(preprocessed, "Preprocess sweep input")
+                    kmeans_labels, _ = run_kmeans(
+                        preprocessed,
+                        40,
+                        cfg.kmeans_init,
+                        cfg.kmeans_n_init,
+                        distance_metric,
+                    )
+                    kmeans_metrics = compute_cluster_metrics(true_labels_encoded, kmeans_labels)
+                    kmeans_hungarian = compute_hungarian_accuracy(true_labels_encoded, kmeans_labels)
+                    knn_metrics, _, _ = compute_knn_accuracy(
+                        preprocessed,
+                        true_labels_raw.to_numpy(),
+                        ks=[1, 5, 10],
+                        metric=distance_metric,
+                    )
+                    hdbscan_embeddings = preprocessed
+                    additional_hdbscan_scaling = False
+                    if not scale and is_scale_inappropriate(preprocessed):
+                        hdbscan_embeddings, _ = apply_scaling(preprocessed, True)
+                        additional_hdbscan_scaling = True
+                    hdbscan_cfg = dict(cfg.hdbscan_cfg)
+                    hdbscan_cfg.update(
+                        {
+                            "min_cluster_size": 5,
+                            "min_samples": hdbscan_min_samples,
+                            "metric": "euclidean",
+                        }
+                    )
+                    hdbscan_model = run_hdbscan(hdbscan_embeddings, hdbscan_cfg)
+                    hdbscan_labels = hdbscan_model.labels_
+                    hdbscan_noise_rate = float(np.mean(hdbscan_labels == -1))
+                    hdbscan_metrics = compute_cluster_metrics(true_labels_encoded, hdbscan_labels)
+                    hdbscan_metrics_no_noise = compute_cluster_metrics(
+                        true_labels_encoded, hdbscan_labels, mask=hdbscan_labels != -1
+                    )
+                    variant_id = build_preprocess_variant_id(scale, pca_dim, whiten, l2_normalize)
+                    summary = {
+                        "generated_at": datetime.utcnow().isoformat(),
+                        "preprocess": {
+                            "order": "default",
+                            "scale": applied["scale"],
+                            "pca_components": applied["pca_components"],
+                            "whiten": applied["whiten"],
+                            "l2_normalize": applied["l2_normalize"],
+                            "distance_metric": distance_metric,
+                        },
+                        "kmeans": {
+                            "k": 40,
+                            "k_source": "fixed",
+                            "metrics": kmeans_metrics,
+                            "hungarian_accuracy": kmeans_hungarian,
+                        },
+                        "knn_accuracy": knn_metrics,
+                        "hdbscan": {
+                            "config": {
+                                "min_cluster_size": 5,
+                                "min_samples": hdbscan_cfg.get("min_samples"),
+                                "metric": hdbscan_cfg.get("metric", "euclidean"),
+                                "extra_hdbscan_scale": additional_hdbscan_scaling,
+                            },
+                            "noise_rate": hdbscan_noise_rate,
+                            "coverage": 1.0 - hdbscan_noise_rate,
+                            "metrics": hdbscan_metrics,
+                            "metrics_no_noise": hdbscan_metrics_no_noise,
+                        },
+                    }
+                    summary_path = output_dir / f"summary_{variant_id}.json"
+                    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+                    summary_paths.append(summary_path)
+                    row: Dict[str, Optional[float]] = {
+                        "scale": scale,
+                        "pca_dim": pca_dim,
+                        "whiten": whiten,
+                        "l2_normalize": l2_normalize,
+                        "distance_metric": distance_metric,
+                        "knn_overall_k1": knn_metrics["1"]["overall"],
+                        "knn_macro_k1": knn_metrics["1"]["macro"],
+                        "knn_overall_k5": knn_metrics["5"]["overall"],
+                        "knn_macro_k5": knn_metrics["5"]["macro"],
+                        "knn_overall_k10": knn_metrics["10"]["overall"],
+                        "knn_macro_k10": knn_metrics["10"]["macro"],
+                        "kmeans_ari": kmeans_metrics["ari"],
+                        "kmeans_nmi": kmeans_metrics["nmi"],
+                        "kmeans_purity": kmeans_metrics["purity"],
+                        "kmeans_hungarian_accuracy": kmeans_hungarian,
+                        "hdbscan_noise_rate": hdbscan_noise_rate,
+                        "hdbscan_coverage": 1.0 - hdbscan_noise_rate,
+                        "hdbscan_ari_no_noise": hdbscan_metrics_no_noise["ari"],
+                        "hdbscan_nmi_no_noise": hdbscan_metrics_no_noise["nmi"],
+                        "hdbscan_purity_no_noise": hdbscan_metrics_no_noise["purity"],
+                        "summary_path": str(summary_path),
+                    }
+                    sweep_rows.append(row)
+
+    if sweep_rows:
+        sweep_path = output_dir / "preprocess_sweep.csv"
+        pd.DataFrame(sweep_rows).to_csv(sweep_path, index=False)
+        logging.info("Saved preprocess sweep results to %s", sweep_path)
+
+
 def build_fixed_k_result(k: int) -> AutoKResult:
     curves = MetricCurves(ks=[], inertia=[], silhouette=[], gap=[], gap_std=[], bic=[])
     return AutoKResult(consensus_k=k, elbow_k=k, silhouette_k=k, gap_k=k, bic_k=k, curves=curves)
@@ -805,6 +969,8 @@ def main() -> None:
         message=".*'force_all_finite' was renamed to 'ensure_all_finite' in 1.6 and will be removed in 1.8.*",
         category=FutureWarning,
     )
+    random.seed(42)
+    np.random.seed(42)
 
     cfg = load_config(args.config)
     embeddings = load_embeddings(args.emb)
@@ -930,53 +1096,58 @@ def main() -> None:
             sweep_values_list = sweep_values(
                 args.hdbscan_sweep_min, args.hdbscan_sweep_max, args.hdbscan_sweep_step
             )
+            min_samples_candidates = parse_int_list(args.hdbscan_min_samples_sweep)
+            if args.hdbscan_min_samples_mode == "auto":
+                min_samples_candidates = []
+            if not min_samples_candidates:
+                min_samples_candidates = [hdbscan_cfg.get("min_samples")]
             best_score = float("-inf")
             best_noise = float("inf")
             best_labels = None
             best_cfg = None
             for min_cluster_size in sweep_values_list:
-                min_samples = hdbscan_cfg.get("min_samples")
-                if args.hdbscan_min_samples_mode == "auto":
-                    min_samples = min_cluster_size
-                sweep_cfg = dict(
-                    hdbscan_cfg,
-                    min_cluster_size=min_cluster_size,
-                    min_samples=min_samples,
-                )
-                model = run_hdbscan(hdbscan_embeddings, sweep_cfg)
-                labels = model.labels_
-                noise_rate = float(np.mean(labels == -1))
-                clusters_found = len(set(labels)) - (1 if -1 in labels else 0)
-                metrics_all = compute_cluster_metrics(true_labels_encoded, labels)
-                metrics_no_noise = compute_cluster_metrics(
-                    true_labels_encoded, labels, mask=labels != -1
-                )
-                coverage = 1.0 - noise_rate
-                purity_no_noise = metrics_no_noise["purity"]
-                score = (purity_no_noise * coverage) if purity_no_noise is not None else float("-inf")
-                hdbscan_sweep_rows.append(
-                    {
-                        "min_cluster_size": min_cluster_size,
-                        "min_samples": sweep_cfg.get("min_samples"),
-                        "clusters_found": clusters_found,
-                        "noise_rate": noise_rate,
-                        "coverage": coverage,
-                        "ari": metrics_all["ari"],
-                        "nmi": metrics_all["nmi"],
-                        "purity": metrics_all["purity"],
-                        "ari_no_noise": metrics_no_noise["ari"],
-                        "nmi_no_noise": metrics_no_noise["nmi"],
-                        "purity_no_noise": metrics_no_noise["purity"],
-                        "score": score,
-                        "n_samples": metrics_all["n_samples"],
-                        "n_samples_no_noise": metrics_no_noise["n_samples"],
-                    }
-                )
-                if score > best_score or (score == best_score and noise_rate < best_noise):
-                    best_score = score
-                    best_noise = noise_rate
-                    best_labels = labels
-                    best_cfg = sweep_cfg
+                for min_samples in min_samples_candidates:
+                    if args.hdbscan_min_samples_mode == "auto":
+                        min_samples = min_cluster_size
+                    sweep_cfg = dict(
+                        hdbscan_cfg,
+                        min_cluster_size=min_cluster_size,
+                        min_samples=min_samples,
+                    )
+                    model = run_hdbscan(hdbscan_embeddings, sweep_cfg)
+                    labels = model.labels_
+                    noise_rate = float(np.mean(labels == -1))
+                    clusters_found = len(set(labels)) - (1 if -1 in labels else 0)
+                    metrics_all = compute_cluster_metrics(true_labels_encoded, labels)
+                    metrics_no_noise = compute_cluster_metrics(
+                        true_labels_encoded, labels, mask=labels != -1
+                    )
+                    coverage = 1.0 - noise_rate
+                    purity_no_noise = metrics_no_noise["purity"]
+                    score = (purity_no_noise * coverage) if purity_no_noise is not None else float("-inf")
+                    hdbscan_sweep_rows.append(
+                        {
+                            "min_cluster_size": min_cluster_size,
+                            "min_samples": sweep_cfg.get("min_samples"),
+                            "clusters_found": clusters_found,
+                            "noise_rate": noise_rate,
+                            "coverage": coverage,
+                            "ari": metrics_all["ari"],
+                            "nmi": metrics_all["nmi"],
+                            "purity": metrics_all["purity"],
+                            "ari_no_noise": metrics_no_noise["ari"],
+                            "nmi_no_noise": metrics_no_noise["nmi"],
+                            "purity_no_noise": metrics_no_noise["purity"],
+                            "score": score,
+                            "n_samples": metrics_all["n_samples"],
+                            "n_samples_no_noise": metrics_no_noise["n_samples"],
+                        }
+                    )
+                    if score > best_score or (score == best_score and noise_rate < best_noise):
+                        best_score = score
+                        best_noise = noise_rate
+                        best_labels = labels
+                        best_cfg = sweep_cfg
             if best_labels is None or best_cfg is None:
                 raise ValueError("HDBSCAN sweep failed to produce valid clustering results.")
             hdbscan_labels = best_labels
@@ -1061,6 +1232,18 @@ def main() -> None:
         )
         hdbscan_assignments.to_csv(output_dir / "hdbscan_assignments.csv", index=False)
 
+    recommended_settings = {
+        "whiten": "False",
+        "pca_dim": "64 or 128",
+        "l2_normalize": "True",
+    }
+    run_settings = {
+        "scale": str(applied_preproc["scale"]),
+        "pca_components": str(applied_preproc["pca_components"]),
+        "whiten": str(applied_preproc["whiten"]),
+        "l2_normalize": str(applied_preproc["l2_normalize"]),
+        "distance_metric": distance_metric,
+    }
     render_report(
         output_dir,
         cfg.html_template,
@@ -1068,6 +1251,8 @@ def main() -> None:
         df,
         auto_k_result,
         plot_entries,
+        recommended_settings,
+        run_settings,
     )
 
     kmeans_metrics = compute_cluster_metrics(true_labels_encoded, kmeans_labels)
@@ -1131,6 +1316,17 @@ def main() -> None:
         sweep_path = output_dir / "hdbscan_sweep.csv"
         pd.DataFrame(hdbscan_sweep_rows).to_csv(sweep_path, index=False)
         summary.setdefault("hdbscan", {})["sweep_path"] = str(sweep_path)
+
+    if args.preprocess_sweep:
+        run_preprocess_sweep(
+            embeddings=embeddings,
+            true_labels_raw=true_labels_raw,
+            true_labels_encoded=true_labels_encoded,
+            cfg=cfg,
+            output_dir=output_dir,
+            distance_metric="cosine",
+            hdbscan_min_samples=args.hdbscan_min_samples,
+        )
 
     if knn_per_class_k1:
         knn_df = pd.DataFrame(
