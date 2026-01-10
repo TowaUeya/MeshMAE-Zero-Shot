@@ -1334,33 +1334,41 @@ def main() -> None:
     elif distance_metric == "cosine" and not applied_preproc["l2_normalize"]:
         logging.warning("Cosine distance selected without L2 normalization; consider --l2-normalize for KMeans.")
 
-    ensure_non_degenerate_embeddings(clustering_embeddings, "KMeans input")
+    ensure_non_degenerate_embeddings(clustering_embeddings, "Clustering input")
     log_feature_summary(clustering_embeddings, "Clustering input")
     log_feature_statistics(clustering_embeddings, "Clustering input")
 
-    fixed_k = parse_kmeans_k(kmeans_k_raw)
-    if fixed_k is not None:
-        logging.info("Overriding consensus k with fixed K-Means k=%d", fixed_k)
-        auto_k_result = build_fixed_k_result(fixed_k)
-        k_source = "fixed"
-    else:
-        auto_k_result = auto_select_k(
-            clustering_embeddings,
-            k_min=cfg.k_min,
-            k_max=cfg.k_max,
-            reference_samples=cfg.gap_reference,
-            covariance_type=cfg.covariance_type,
-        )
-        k_source = "auto"
-        logging.info("Consensus k determined as %d", auto_k_result.consensus_k)
+    run_kmeans_pipeline = args.preset != "hdbscan_core"
+    auto_k_result = None
+    k_source = None
+    kmeans_labels = None
+    kmeans_distances = None
+    if run_kmeans_pipeline:
+        fixed_k = parse_kmeans_k(kmeans_k_raw)
+        if fixed_k is not None:
+            logging.info("Overriding consensus k with fixed K-Means k=%d", fixed_k)
+            auto_k_result = build_fixed_k_result(fixed_k)
+            k_source = "fixed"
+        else:
+            auto_k_result = auto_select_k(
+                clustering_embeddings,
+                k_min=cfg.k_min,
+                k_max=cfg.k_max,
+                reference_samples=cfg.gap_reference,
+                covariance_type=cfg.covariance_type,
+            )
+            k_source = "auto"
+            logging.info("Consensus k determined as %d", auto_k_result.consensus_k)
 
-    kmeans_labels, kmeans_distances = run_kmeans(
-        clustering_embeddings,
-        auto_k_result.consensus_k,
-        cfg.kmeans_init,
-        cfg.kmeans_n_init,
-        distance_metric,
-    )
+        kmeans_labels, kmeans_distances = run_kmeans(
+            clustering_embeddings,
+            auto_k_result.consensus_k,
+            cfg.kmeans_init,
+            cfg.kmeans_n_init,
+            distance_metric,
+        )
+    else:
+        logging.info("Preset hdbscan_core selected; skipping KMeans/consensus pipeline.")
     hdbscan_labels = None
     hdbscan_noise_rate = None
     hdbscan_metrics = None
@@ -1475,40 +1483,48 @@ def main() -> None:
         )
         logging.info("HDBSCAN noise (-1) rate: %.2f", hdbscan_noise_rate)
 
-    gmm = GaussianMixture(n_components=auto_k_result.consensus_k, covariance_type=cfg.covariance_type, random_state=42)
-    gmm.fit(clustering_embeddings)
-
-    ambiguity_mask = compute_ambiguity(
-        clustering_embeddings,
-        kmeans_labels,
-        kmeans_distances,
-        hdbscan_labels if hdbscan_labels is not None else np.full(len(kmeans_labels), -1),
-        cfg.silhouette_threshold,
-        cfg.posterior_threshold,
-        cfg.distance_quantile,
-        gmm,
-        distance_metric,
-    )
-
-    consensus_labels = kmeans_labels.copy()
-
-    df = metadata.copy()
-    df["kmeans"] = kmeans_labels
-    df["hdbscan"] = hdbscan_labels if hdbscan_labels is not None else -1
-    df["consensus"] = consensus_labels
-    df["ambiguous"] = ambiguity_mask
-
     output_dir = args.out_dir
     output_dir.mkdir(parents=True, exist_ok=True)
-    save_assignments(output_dir, df)
 
-    plot_entries = plot_curves(output_dir, auto_k_result.curves)
-    umap_entry = plot_umap(output_dir, clustering_embeddings, consensus_labels)
-    if umap_entry:
-        plot_entries.append(umap_entry)
-    umap_3d_entry = plot_umap_3d_html(output_dir, clustering_embeddings, consensus_labels)
-    if umap_3d_entry:
-        plot_entries.append(umap_3d_entry)
+    plot_entries: List[PlotEntry] = []
+    ambiguity_mask = None
+    if run_kmeans_pipeline:
+        gmm = GaussianMixture(
+            n_components=auto_k_result.consensus_k,
+            covariance_type=cfg.covariance_type,
+            random_state=42,
+        )
+        gmm.fit(clustering_embeddings)
+
+        ambiguity_mask = compute_ambiguity(
+            clustering_embeddings,
+            kmeans_labels,
+            kmeans_distances,
+            hdbscan_labels if hdbscan_labels is not None else np.full(len(kmeans_labels), -1),
+            cfg.silhouette_threshold,
+            cfg.posterior_threshold,
+            cfg.distance_quantile,
+            gmm,
+            distance_metric,
+        )
+
+        consensus_labels = kmeans_labels.copy()
+
+        df = metadata.copy()
+        df["kmeans"] = kmeans_labels
+        df["hdbscan"] = hdbscan_labels if hdbscan_labels is not None else -1
+        df["consensus"] = consensus_labels
+        df["ambiguous"] = ambiguity_mask
+
+        save_assignments(output_dir, df)
+
+        plot_entries = plot_curves(output_dir, auto_k_result.curves)
+        umap_entry = plot_umap(output_dir, clustering_embeddings, consensus_labels)
+        if umap_entry:
+            plot_entries.append(umap_entry)
+        umap_3d_entry = plot_umap_3d_html(output_dir, clustering_embeddings, consensus_labels)
+        if umap_3d_entry:
+            plot_entries.append(umap_3d_entry)
 
     path_column = select_path_column(metadata)
     if path_column:
@@ -1516,14 +1532,15 @@ def main() -> None:
     else:
         path_values = metadata.index.astype(str)
 
-    kmeans_assignments = pd.DataFrame(
-        {
-            "path": path_values,
-            "true_label": true_labels_raw.astype(str),
-            "pred_label": kmeans_labels,
-        }
-    )
-    kmeans_assignments.to_csv(output_dir / "kmeans_assignments.csv", index=False)
+    if run_kmeans_pipeline:
+        kmeans_assignments = pd.DataFrame(
+            {
+                "path": path_values,
+                "true_label": true_labels_raw.astype(str),
+                "pred_label": kmeans_labels,
+            }
+        )
+        kmeans_assignments.to_csv(output_dir / "kmeans_assignments.csv", index=False)
 
     if hdbscan_labels is not None:
         hdbscan_assignments = pd.DataFrame(
@@ -1610,26 +1627,55 @@ def main() -> None:
         logging.info("Settings diff: %s", settings_diff)
     else:
         logging.info("Run settings match preset recommendations.")
-    render_report(
-        output_dir,
-        cfg.html_template,
-        cfg.report_title,
-        df,
-        auto_k_result,
-        plot_entries,
-        recommended_settings,
-        run_settings,
-        settings_diff,
-    )
 
-    kmeans_metrics = compute_cluster_metrics(true_labels_encoded, kmeans_labels)
-    kmeans_hungarian = compute_hungarian_accuracy(true_labels_encoded, kmeans_labels)
+    if run_kmeans_pipeline:
+        render_report(
+            output_dir,
+            cfg.html_template,
+            cfg.report_title,
+            df,
+            auto_k_result,
+            plot_entries,
+            recommended_settings,
+            run_settings,
+            settings_diff,
+        )
+
+        kmeans_metrics = compute_cluster_metrics(true_labels_encoded, kmeans_labels)
+        kmeans_hungarian = compute_hungarian_accuracy(true_labels_encoded, kmeans_labels)
+    else:
+        kmeans_metrics = None
+        kmeans_hungarian = None
     knn_metrics, knn_per_class_k1, knn_per_class_counts = compute_knn_accuracy(
         clustering_embeddings,
         true_labels_raw.to_numpy(),
         ks=[1, 5, 10],
         metric=distance_metric,
     )
+    non_ambiguous_count = None
+    non_ambiguous_kmeans_metrics = None
+    non_ambiguous_knn_metrics = None
+    non_ambiguous_noise_count = None
+    non_ambiguous_noise_rate = None
+    non_ambiguous_noise_present = None
+    if run_kmeans_pipeline:
+        non_ambiguous_mask = ~ambiguity_mask
+        non_ambiguous_count = int(np.sum(non_ambiguous_mask))
+        non_ambiguous_kmeans_metrics = compute_cluster_metrics(
+            true_labels_encoded, kmeans_labels, mask=non_ambiguous_mask
+        )
+        non_ambiguous_knn_metrics, _, _ = compute_knn_accuracy(
+            clustering_embeddings[non_ambiguous_mask],
+            true_labels_raw.to_numpy()[non_ambiguous_mask],
+            ks=[1],
+            metric=distance_metric,
+        )
+        if hdbscan_labels is not None:
+            non_ambiguous_noise_count = int(np.sum((hdbscan_labels == -1) & non_ambiguous_mask))
+            non_ambiguous_noise_rate = (
+                non_ambiguous_noise_count / non_ambiguous_count if non_ambiguous_count else None
+            )
+            non_ambiguous_noise_present = non_ambiguous_noise_count > 0
     if args.preset == "retrieval_knn":
         knn_confusion = compute_knn_confusion_matrix(
             clustering_embeddings,
@@ -1649,24 +1695,35 @@ def main() -> None:
             "run_settings": run_settings,
             "diff": settings_diff,
         },
-        "kmeans": {
+        "knn_accuracy": knn_metrics,
+    }
+
+    if run_kmeans_pipeline:
+        summary["kmeans"] = {
             "k": int(auto_k_result.consensus_k),
             "k_source": k_source,
             "metrics": kmeans_metrics,
             "hungarian_accuracy": kmeans_hungarian,
             "cluster_sizes": compute_cluster_sizes(kmeans_labels),
-        },
-        "knn_accuracy": knn_metrics,
-    }
-
-    if k_source == "auto":
-        summary["auto_k"] = {
-            "consensus_k": int(auto_k_result.consensus_k),
-            "elbow_k": int(auto_k_result.elbow_k),
-            "silhouette_k": int(auto_k_result.silhouette_k),
-            "gap_k": int(auto_k_result.gap_k),
-            "bic_k": int(auto_k_result.bic_k),
         }
+        summary["non_ambiguous"] = {
+            "count": non_ambiguous_count,
+            "kmeans_metrics": non_ambiguous_kmeans_metrics,
+            "knn_accuracy": non_ambiguous_knn_metrics.get("1"),
+            "hdbscan_noise_in_non_ambiguous": {
+                "count": non_ambiguous_noise_count,
+                "rate": non_ambiguous_noise_rate,
+                "present": non_ambiguous_noise_present,
+            },
+        }
+        if k_source == "auto":
+            summary["auto_k"] = {
+                "consensus_k": int(auto_k_result.consensus_k),
+                "elbow_k": int(auto_k_result.elbow_k),
+                "silhouette_k": int(auto_k_result.silhouette_k),
+                "gap_k": int(auto_k_result.gap_k),
+                "bic_k": int(auto_k_result.bic_k),
+            }
 
     if hdbscan_labels is not None:
         summary["hdbscan"] = {
@@ -1730,14 +1787,15 @@ def main() -> None:
         "kNN acc@1/5/10 macro: %s",
         {k: v["macro"] for k, v in knn_metrics.items()},
     )
-    logging.info(
-        "KMeans(k=%d) ARI=%.4f NMI=%.4f purity=%.4f",
-        auto_k_result.consensus_k,
-        kmeans_metrics["ari"],
-        kmeans_metrics["nmi"],
-        kmeans_metrics["purity"],
-    )
-    logging.info("KMeans Hungarian-matched accuracy: %.4f", kmeans_hungarian)
+    if run_kmeans_pipeline:
+        logging.info(
+            "KMeans(k=%d) ARI=%.4f NMI=%.4f purity=%.4f",
+            auto_k_result.consensus_k,
+            kmeans_metrics["ari"],
+            kmeans_metrics["nmi"],
+            kmeans_metrics["purity"],
+        )
+        logging.info("KMeans Hungarian-matched accuracy: %.4f", kmeans_hungarian)
     if hdbscan_labels is not None:
         logging.info(
             "HDBSCAN best: clusters=%d noise=%.2f ARI=%s NMI=%s purity=%s "
