@@ -77,6 +77,20 @@
      --config configs/cluster.yaml \
      --out-dir out
    ```
+   ```bash
+   # k を固定して検証する例
+   python -m src.cluster.run_clustering \
+     --emb embeddings/raw_embeddings.npy \
+     --meta embeddings/meta.csv \
+     --config configs/cluster.yaml \
+     --out-dir out \
+     --kmeans-k 40
+   ```
+   > **k 固定での検証や距離の見直しをしたい場合**は、次のオプションを使えます。
+   > - `--kmeans-k 40` のように整数指定で K-Means のクラスタ数を固定（未指定/`auto` は自動推定）。
+   > - `--distance-metric cosine --l2-normalize` で L2 正規化 + コサイン距離を適用。
+   > - `--label-column label` を渡すと、メタデータのラベル列を使って kNN 精度（k=1,5,10）を算出し、
+   >   `out/cluster/knn_metrics.json` と `summary.json` に書き込みます。
 
 > 継続SSL（ドメイン適応）を行う場合は、後述の「2. 自己教師あり学習の継続」を参照してください。
 
@@ -473,7 +487,8 @@ python -m src.cluster.run_clustering \
   --emb embeddings/raw_embeddings.npy \
   --meta embeddings/meta.csv \
   --config configs/cluster.yaml \
-  --out-dir out
+  --out-dir out \
+  --kmeans-k 40
 ```
 
 主な成果物:

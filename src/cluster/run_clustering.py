@@ -26,7 +26,7 @@ from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_samples
 from sklearn.mixture import GaussianMixture
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, normalize
 
 import hdbscan
 
@@ -123,10 +123,16 @@ def apply_pca(embeddings: np.ndarray, components: Optional[float], whiten: bool)
     return transformed
 
 
-def run_kmeans(embeddings: np.ndarray, n_clusters: int, init: str, n_init: int) -> Tuple[np.ndarray, np.ndarray]:
+def run_kmeans(
+    embeddings: np.ndarray,
+    n_clusters: int,
+    init: str,
+    n_init: int,
+    distance_metric: str,
+) -> Tuple[np.ndarray, np.ndarray]:
     model = KMeans(n_clusters=n_clusters, init=init, n_init=n_init, random_state=42)
     labels = model.fit_predict(embeddings)
-    distances = cdist(embeddings, model.cluster_centers_, metric="euclidean")
+    distances = cdist(embeddings, model.cluster_centers_, metric=distance_metric)
     min_dist = distances[np.arange(len(labels)), labels]
     return labels, min_dist
 
@@ -203,12 +209,13 @@ def compute_ambiguity(
     posterior_threshold: float,
     distance_quantile: float,
     gmm_model: GaussianMixture,
+    distance_metric: str,
 ) -> np.ndarray:
     unique_labels = np.unique(kmeans_labels)
     if unique_labels.size < 2:
         silhouette_vals = np.zeros(len(kmeans_labels))
     else:
-        silhouette_vals = silhouette_samples(embeddings, kmeans_labels)
+        silhouette_vals = silhouette_samples(embeddings, kmeans_labels, metric=distance_metric)
     posterior = gmm_model.predict_proba(embeddings)
     max_posterior = posterior.max(axis=1)
     distance_cutoff = np.quantile(kmeans_distances, distance_quantile)
@@ -446,7 +453,72 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--meta", type=Path, default=None, help="Metadata CSV")
     parser.add_argument("--config", type=Path, required=True, help="Clustering YAML config")
     parser.add_argument("--out-dir", type=Path, default=Path("./out"), help="Output directory")
+    parser.add_argument(
+        "--kmeans-k",
+        default="auto",
+        help="Fix K-Means clusters (integer) or use auto selection (default: auto).",
+    )
+    parser.add_argument(
+        "--distance-metric",
+        choices=("euclidean", "cosine"),
+        default="euclidean",
+        help="Distance metric for K-Means/HDBSCAN ambiguity checks (default: euclidean).",
+    )
+    parser.add_argument(
+        "--l2-normalize",
+        action="store_true",
+        help="Apply L2 normalization before clustering (recommended for cosine distance).",
+    )
+    parser.add_argument(
+        "--label-column",
+        default=None,
+        help="Metadata column containing class labels for kNN accuracy checks.",
+    )
     return parser.parse_args()
+
+
+def parse_kmeans_k(raw: str) -> Optional[int]:
+    if raw is None:
+        return None
+    if isinstance(raw, str) and raw.lower() == "auto":
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid --kmeans-k value '{raw}'; use an integer or 'auto'.") from exc
+    if value <= 0:
+        raise ValueError("--kmeans-k must be a positive integer.")
+    return value
+
+
+def apply_l2_normalization(embeddings: np.ndarray) -> np.ndarray:
+    return normalize(embeddings, norm="l2")
+
+
+def compute_knn_accuracy(
+    embeddings: np.ndarray,
+    labels: np.ndarray,
+    ks: List[int],
+    metric: str,
+) -> Dict[int, Optional[float]]:
+    if embeddings.shape[0] != labels.shape[0]:
+        raise ValueError("Embeddings and labels must have the same number of samples for kNN evaluation.")
+    n_samples = embeddings.shape[0]
+    label_codes, _ = pd.factorize(labels)
+    distances = cdist(embeddings, embeddings, metric=metric)
+    np.fill_diagonal(distances, np.inf)
+    results: Dict[int, Optional[float]] = {}
+    for k in ks:
+        if k <= 0 or k >= n_samples:
+            results[k] = None
+            continue
+        neighbor_idx = np.argpartition(distances, kth=k - 1, axis=1)[:, :k]
+        preds = np.empty(n_samples, dtype=int)
+        for i in range(n_samples):
+            votes = label_codes[neighbor_idx[i]]
+            preds[i] = np.bincount(votes, minlength=label_codes.max() + 1).argmax()
+        results[k] = float(np.mean(preds == label_codes))
+    return results
 
 
 def main() -> None:
@@ -455,7 +527,12 @@ def main() -> None:
 
     cfg = load_config(args.config)
     embeddings = load_embeddings(args.emb)
-    logging.info("Preprocessing config: scale=%s, pca_components=%s, whiten=%s", cfg.scale, cfg.pca_components, cfg.whiten)
+    logging.info(
+        "Preprocessing config: scale=%s, pca_components=%s, whiten=%s",
+        cfg.scale,
+        cfg.pca_components,
+        cfg.whiten,
+    )
     if args.meta and args.meta.exists():
         metadata = pd.read_csv(args.meta)
     else:
@@ -466,28 +543,50 @@ def main() -> None:
     scaled, _ = apply_scaling(embeddings, cfg.scale)
     pca_embeddings = apply_pca(scaled, cfg.pca_components, cfg.whiten)
     working_embeddings = pca_embeddings if pca_embeddings is not None else scaled
-    ensure_non_degenerate_embeddings(working_embeddings, "KMeans input")
-    log_feature_statistics(working_embeddings, "KMeans input")
+    distance_metric = args.distance_metric
+    use_l2_norm = args.l2_normalize or distance_metric == "cosine"
+    clustering_embeddings = working_embeddings
+    if use_l2_norm:
+        clustering_embeddings = apply_l2_normalization(working_embeddings)
+        logging.info("Applied L2 normalization to embeddings for clustering.")
+    ensure_non_degenerate_embeddings(clustering_embeddings, "KMeans input")
+    log_feature_statistics(clustering_embeddings, "Clustering input")
 
     auto_k_result = auto_select_k(
-        working_embeddings,
+        clustering_embeddings,
         k_min=cfg.k_min,
         k_max=cfg.k_max,
         reference_samples=cfg.gap_reference,
         covariance_type=cfg.covariance_type,
     )
-    logging.info("Consensus k determined as %d", auto_k_result.consensus_k)
+    fixed_k = parse_kmeans_k(args.kmeans_k)
+    if fixed_k is not None:
+        logging.info("Overriding consensus k with fixed K-Means k=%d", fixed_k)
+        auto_k_result = dataclasses.replace(auto_k_result, consensus_k=fixed_k)
+        k_source = "fixed"
+    else:
+        k_source = "auto"
+        logging.info("Consensus k determined as %d", auto_k_result.consensus_k)
 
-    kmeans_labels, kmeans_distances = run_kmeans(working_embeddings, auto_k_result.consensus_k, cfg.kmeans_init, cfg.kmeans_n_init)
-    hdbscan_embeddings = working_embeddings
+    kmeans_labels, kmeans_distances = run_kmeans(
+        clustering_embeddings,
+        auto_k_result.consensus_k,
+        cfg.kmeans_init,
+        cfg.kmeans_n_init,
+        distance_metric,
+    )
+    hdbscan_embeddings = clustering_embeddings
     additional_hdbscan_scaling = False
-    if not cfg.scale and is_scale_inappropriate(working_embeddings):
+    if not cfg.scale and is_scale_inappropriate(clustering_embeddings):
         logging.warning(
             "HDBSCAN features show wide scale variance; applying StandardScaler before HDBSCAN."
         )
-        hdbscan_embeddings, _ = apply_scaling(working_embeddings, True)
+        hdbscan_embeddings, _ = apply_scaling(clustering_embeddings, True)
         additional_hdbscan_scaling = True
     hdbscan_cfg = cfg.hdbscan_cfg
+    hdbscan_cfg = dict(hdbscan_cfg)
+    if args.distance_metric:
+        hdbscan_cfg["metric"] = args.distance_metric
     logging.info(
         "HDBSCAN config: min_cluster_size=%s, min_samples=%s, metric=%s, preprocessing_scale=%s, extra_hdbscan_scale=%s",
         hdbscan_cfg.get("min_cluster_size", 8),
@@ -509,10 +608,10 @@ def main() -> None:
         logging.info("HDBSCAN noise (-1) rate after relaxation: %.2f", noise_rate)
 
     gmm = GaussianMixture(n_components=auto_k_result.consensus_k, covariance_type=cfg.covariance_type, random_state=42)
-    gmm.fit(working_embeddings)
+    gmm.fit(clustering_embeddings)
 
     ambiguity_mask = compute_ambiguity(
-        working_embeddings,
+        clustering_embeddings,
         kmeans_labels,
         kmeans_distances,
         hdbscan_labels,
@@ -520,6 +619,7 @@ def main() -> None:
         cfg.posterior_threshold,
         cfg.distance_quantile,
         gmm,
+        distance_metric,
     )
 
     consensus_labels = kmeans_labels.copy()
@@ -535,10 +635,10 @@ def main() -> None:
     save_assignments(output_dir, df)
 
     plot_entries = plot_curves(output_dir, auto_k_result.curves)
-    umap_entry = plot_umap(output_dir, working_embeddings, consensus_labels)
+    umap_entry = plot_umap(output_dir, clustering_embeddings, consensus_labels)
     if umap_entry:
         plot_entries.append(umap_entry)
-    umap_3d_entry = plot_umap_3d_html(output_dir, working_embeddings, consensus_labels)
+    umap_3d_entry = plot_umap_3d_html(output_dir, clustering_embeddings, consensus_labels)
     if umap_3d_entry:
         plot_entries.append(umap_3d_entry)
 
@@ -556,12 +656,29 @@ def main() -> None:
     )
 
     summary = {
+        "kmeans_k": int(auto_k_result.consensus_k),
+        "kmeans_k_source": k_source,
         "consensus_k": int(auto_k_result.consensus_k),
         "elbow_k": int(auto_k_result.elbow_k),
         "silhouette_k": int(auto_k_result.silhouette_k),
         "gap_k": int(auto_k_result.gap_k),
         "bic_k": int(auto_k_result.bic_k),
     }
+    if args.label_column and args.label_column in metadata.columns:
+        knn_metrics = compute_knn_accuracy(
+            clustering_embeddings,
+            metadata[args.label_column].to_numpy(),
+            ks=[1, 5, 10],
+            metric=distance_metric,
+        )
+        summary["knn_accuracy"] = {str(k): v for k, v in knn_metrics.items()}
+        (output_dir / "cluster" / "knn_metrics.json").write_text(
+            json.dumps(summary["knn_accuracy"], indent=2),
+            encoding="utf-8",
+        )
+        logging.info("kNN accuracy (k=1,5,10): %s", summary["knn_accuracy"])
+    elif args.label_column:
+        logging.warning("Label column '%s' not found in metadata; skipping kNN accuracy.", args.label_column)
     (output_dir / "cluster" / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
 
