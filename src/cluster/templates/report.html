@@ -36,6 +36,16 @@
         <p><span class="badge">{{ key }}</span> {{ value }}</p>
         {% endfor %}
       </div>
+      <div class="card">
+        <h3>Differences</h3>
+        {% if settings_diff %}
+          {% for entry in settings_diff %}
+          <p><span class="badge">{{ entry.key }}</span> {{ entry.recommended }} → {{ entry.actual }}</p>
+          {% endfor %}
+        {% else %}
+          <p>All run settings match the recommended preset values.</p>
+        {% endif %}
+      </div>
     </div>
   </section>
 

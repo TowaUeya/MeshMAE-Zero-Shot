@@ -2,7 +2,7 @@
 preprocessing:
   scale: true
   pca_components: 0.99  # float for variance retention
-  whiten: true
+  whiten: false
   umap:
     enable: true
     n_neighbors: 25
