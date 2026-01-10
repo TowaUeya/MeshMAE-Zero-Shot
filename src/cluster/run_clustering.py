@@ -21,6 +21,7 @@ import dataclasses
 import importlib.util
 import json
 import logging
+import warnings
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -799,6 +800,11 @@ def format_metric(value: Optional[float]) -> str:
 def main() -> None:
     args = parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    warnings.filterwarnings(
+        "ignore",
+        message=".*'force_all_finite' was renamed to 'ensure_all_finite' in 1.6 and will be removed in 1.8.*",
+        category=FutureWarning,
+    )
 
     cfg = load_config(args.config)
     embeddings = load_embeddings(args.emb)
