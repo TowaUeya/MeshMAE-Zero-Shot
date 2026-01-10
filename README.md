@@ -104,7 +104,7 @@
    >   kNN 精度（k=1,5,10）を算出し、`out/summary.json` に書き込みます（クラス別kNN@1は `knn_per_class_at1.csv`）。
    > - `--preset` を使うと用途別のデフォルト設定を適用します（優先順位: CLI明示 > preset > YAML > コードデフォルト）。
    >   - `kmeans40_labelmatch`: PCA=64、whiten=False、L2なし、KMeans(k=40固定)。`kmeans_per_class_purity.csv` と `kmeans_top_confusions.csv` を出力。
-   >   - `hdbscan_core`: PCA=64、whiten=False、L2あり、HDBSCAN sweep 実行。`hdbscan_core_assignments.csv` と `hdbscan_core_medoids.csv` を出力。
+   >   - `hdbscan_core`: PCA=64、whiten=False、L2あり、HDBSCAN sweep 実行。`hdbscan_core_assignments.csv` と `hdbscan_core_medoids.csv` を出力。`hdbscan_core` では KMeans/consensus の実行・ログ・成果物（`consensus.csv`/レポート/UMAP など）を出しません。
    >   - `retrieval_knn`: PCA=64、whiten=False、L2あり、kNN指標重視。`knn_confusion_matrix_k1.csv` を出力。
    > - HDBSCAN のスイープ例（最良は `coverage × purity_no_noise` を最大化）:
    >   ```bash
@@ -526,7 +526,7 @@ python -m src.cluster.run_clustering \
   --kmeans-k 40
 ```
 
-主な成果物:
+主な成果物（`hdbscan_core` 以外のプリセットを想定）:
 
 - `out/cluster/kmeans_assignments.csv`
 - `out/cluster/hdbscan_assignments.csv`
@@ -534,6 +534,9 @@ python -m src.cluster.run_clustering \
 - `out/cluster/summary.json`
 - `out/plots/*.png`（エルボー法、シルエット、ギャップ統計、GMM BIC、UMAP など）
 - `out/report.html`（テンプレートは `src/cluster/templates/report.html`）
+
+`hdbscan_core` プリセットでは KMeans/consensus を走らせないため、`out/cluster/consensus.csv` や KMeans 系プロット/HTML レポートは生成されません。代わりに HDBSCAN のコア出力（`hdbscan_core_assignments.csv`/`hdbscan_core_medoids.csv`）のみを保存します。
+`summary.json` には `kmeans`/`non_ambiguous` など KMeans 依存のフィールドがあり、`hdbscan_core` ではそれらを省略します。
 
 **診断ログ**: K-Means/HDBSCAN に渡す特徴量の平均・分散・ユニーク数をログ出力します。特徴量が全ゼロ・全同一・次元 0 の場合は例外で停止し、埋め込み抽出の設定や入力メッシュを見直してください。HDBSCAN は `min_cluster_size`/`min_samples`/`metric` をログし、スケール不整合が疑われる場合は追加の標準化を行います。ノイズ率が高いときはパラメータを緩和して再実行します。
 
