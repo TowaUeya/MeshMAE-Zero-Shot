@@ -78,6 +78,14 @@
      --out-dir out
    ```
    ```bash
+   # 目的別プリセットで前処理・評価・アルゴリズムを一括切り替え
+   python -m src.cluster.run_clustering \
+     --emb embeddings/raw_embeddings.npy \
+     --meta embeddings/meta.csv \
+     --out-dir out \
+     --preset kmeans40_labelmatch
+   ```
+   ```bash
    # k を固定して検証する例
    python -m src.cluster.run_clustering \
      --emb embeddings/raw_embeddings.npy \
@@ -94,6 +102,10 @@
    > - `--preprocess-sweep` で前処理アブレーションを自動実行し、`out/preprocess_sweep.csv` と各設定の `summary_*.json` を出力（`--no-preprocess-sweep` で無効化）。
    > - `--label-col category` を渡すと、メタデータのラベル列を使って教師あり評価（ARI/NMI/purity）と
    >   kNN 精度（k=1,5,10）を算出し、`out/summary.json` に書き込みます（クラス別kNN@1は `knn_per_class_at1.csv`）。
+   > - `--preset` を使うと用途別のデフォルト設定を適用します（優先順位: CLI明示 > preset > YAML > コードデフォルト）。
+   >   - `kmeans40_labelmatch`: PCA=64、whiten=False、L2なし、KMeans(k=40固定)。`kmeans_per_class_purity.csv` と `kmeans_top_confusions.csv` を出力。
+   >   - `hdbscan_core`: PCA=64、whiten=False、L2あり、HDBSCAN sweep 実行。`hdbscan_core_assignments.csv` と `hdbscan_core_medoids.csv` を出力。
+   >   - `retrieval_knn`: PCA=64、whiten=False、L2あり、kNN指標重視。`knn_confusion_matrix_k1.csv` を出力。
    > - HDBSCAN のスイープ例（最良は `coverage × purity_no_noise` を最大化）:
    >   ```bash
    >   python -m src.cluster.run_clustering \
@@ -110,7 +122,7 @@
    >     --hdbscan-sweep-min 5 --hdbscan-sweep-max 80 --hdbscan-sweep-step 5
    >   ```
    >   `--hdbscan-min-samples-sweep` を指定すると、`min_cluster_size` と独立に `min_samples` を探索できます。
-   > - HTML レポート先頭には「推奨設定（whiten=False / pca_dim=64 or 128 / l2=True）」と実行設定が並列表示されます。
+   > - HTML レポート先頭には「推奨設定（presetテンプレ）」「実行設定」「差分」が並列表示されます。
 
 > 継続SSL（ドメイン適応）を行う場合は、後述の「2. 自己教師あり学習の継続」を参照してください。
 
